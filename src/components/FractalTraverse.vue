@@ -18,6 +18,124 @@ import { RAW_AUDIO_NOISE_FLOOR_DB, rawLevelToDecibels, sampleRawAnalyserLevel } 
 import { useSources } from "../stores/sources";
 import { useVisualizerSettings } from "../stores/visualizer-settings";
 
+const VERTEX_SHADER_SOURCE = `
+attribute vec2 aPosition;
+
+void main() {
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+const FRAGMENT_SHADER_SOURCE = `
+precision highp float;
+precision highp int;
+
+uniform vec2 uResolution;
+uniform vec2 uCenter;
+uniform float uScale;
+uniform float uRotation;
+uniform float uAspect;
+uniform float uPalettePhase;
+uniform float uAmbientLift;
+uniform float uPaletteEnergy;
+uniform float uStableAA;
+uniform int uMaxIterations;
+
+const int MAX_ITERATIONS = 720;
+const float TAU = 6.28318530718;
+
+struct FractalSample {
+  float escaped;
+  float smoothValue;
+  float trap;
+};
+
+FractalSample sampleMandelbrot(vec2 c) {
+  vec2 z = vec2(0.0);
+  float trap = 1000000.0;
+  float smoothValue = float(uMaxIterations);
+  float escaped = 0.0;
+
+  for (int i = 0; i < MAX_ITERATIONS; i++) {
+    if (i >= uMaxIterations) {
+      break;
+    }
+
+    z = vec2(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y);
+    float radiusSquared = dot(z, z);
+    trap = min(trap, min(abs(z.x * z.y), abs(z.x) + abs(z.y) * 0.35));
+
+    if (radiusSquared > 16.0) {
+      float radius = sqrt(radiusSquared);
+      smoothValue = float(i) + 1.0 - log2(max(log2(max(radius, 4.0)), 0.0001));
+      escaped = 1.0;
+      break;
+    }
+  }
+
+  FractalSample result;
+  result.escaped = escaped;
+  result.smoothValue = smoothValue;
+  result.trap = trap;
+  return result;
+}
+
+vec3 colorize(FractalSample sample, vec2 uv) {
+  float normalized = clamp(sample.smoothValue / float(uMaxIterations), 0.0, 1.0);
+  float trapGlow = exp(-sample.trap * (8.8 - uPaletteEnergy * 2.2));
+  float paletteT = uPalettePhase + normalized * 0.86 + trapGlow * 0.18;
+  vec3 wave = 0.5 + 0.5 * cos(TAU * (paletteT + vec3(0.02, 0.22, 0.47)));
+  float vignette = clamp(1.08 - dot(uv, uv) * 1.42, 0.68, 1.08);
+
+  if (sample.escaped < 0.5) {
+    float interior = (0.02 + trapGlow * 0.14 + uAmbientLift * 0.82) * vignette;
+    return pow(vec3(interior * 0.11, interior * 0.16, interior * 0.27), vec3(0.96));
+  }
+
+  float boundary = pow(normalized, 1.18);
+  float shimmer = 0.16 + uPaletteEnergy + trapGlow * 0.36;
+  float brightness = (uAmbientLift + boundary * 0.68 + shimmer) * vignette;
+  vec3 color = vec3(0.1 + wave.r * 0.9, 0.08 + wave.g * 0.72, 0.18 + wave.b * 0.96) * brightness;
+  return pow(color, vec3(0.94));
+}
+
+vec3 samplePixel(vec2 fragCoord) {
+  vec2 centered = fragCoord / uResolution - 0.5;
+  vec2 paletteUv = vec2(centered.x, centered.y);
+  centered.x *= uAspect;
+
+  float cosRotation = cos(uRotation);
+  float sinRotation = sin(uRotation);
+  vec2 rotated = vec2(
+    centered.x * cosRotation - centered.y * sinRotation,
+    centered.x * sinRotation + centered.y * cosRotation
+  ) * uScale;
+
+  FractalSample sample = sampleMandelbrot(uCenter + rotated);
+  return colorize(sample, paletteUv);
+}
+
+void main() {
+  vec2 frag = gl_FragCoord.xy;
+  vec3 color = 0.5 * (
+    samplePixel(frag + vec2(-0.25, 0.25)) +
+    samplePixel(frag + vec2(0.25, -0.25))
+  );
+
+  if (uStableAA > 0.01) {
+    vec3 refined = 0.25 * (
+      samplePixel(frag + vec2(-0.38, -0.12)) +
+      samplePixel(frag + vec2(0.12, 0.38)) +
+      samplePixel(frag + vec2(0.38, -0.28)) +
+      samplePixel(frag + vec2(-0.12, 0.28))
+    );
+    color = mix(color, refined, uStableAA);
+  }
+
+  gl_FragColor = vec4(color, 1.0);
+}
+`;
+
 type ComplexPoint = {
   x: number;
   y: number;
@@ -47,7 +165,7 @@ type FractalFamily = {
   id: string;
   guidePoints: FractalWaypoint[];
   getStartViewport: () => FractalViewport;
-  getMaxIterations: (scale: number) => number;
+  getMaxIterations: (scale: number, qualityBias?: number) => number;
   sample: (pointX: number, pointY: number, maxIterations: number, out: MutableFractalSample) => void;
 };
 
@@ -82,17 +200,54 @@ type TraversalState = {
   camera: FractalViewport;
 };
 
+type InterestMetrics = {
+  center: ComplexPoint;
+  scale: number;
+  score: number;
+  boundaryDensity: number;
+  variation: number;
+  mixedness: number;
+  trapDetail: number;
+};
+
+type InterestState = {
+  desiredOffset: ComplexPoint;
+  focusOffset: ComplexPoint;
+  desiredZoomGovernor: number;
+  zoomGovernor: number;
+  desiredZoomPermission: number;
+  zoomPermission: number;
+  currentScore: number;
+  bestScore: number;
+  lowInterestTime: number;
+  searchPhase: number;
+  lastEvaluationAt: number;
+};
+
+type GLUniforms = {
+  resolution: WebGLUniformLocation | null;
+  center: WebGLUniformLocation | null;
+  scale: WebGLUniformLocation | null;
+  rotation: WebGLUniformLocation | null;
+  aspect: WebGLUniformLocation | null;
+  palettePhase: WebGLUniformLocation | null;
+  ambientLift: WebGLUniformLocation | null;
+  paletteEnergy: WebGLUniformLocation | null;
+  stableAA: WebGLUniformLocation | null;
+  maxIterations: WebGLUniformLocation | null;
+};
+
 type RenderState = {
-  displayCanvas: HTMLCanvasElement | null;
-  displayContext: CanvasRenderingContext2D | null;
-  offscreenCanvas: HTMLCanvasElement | null;
-  offscreenContext: CanvasRenderingContext2D | null;
-  imageData: ImageData | null;
-  renderWidth: number;
-  renderHeight: number;
+  canvas: HTMLCanvasElement | null;
+  gl: WebGLRenderingContext | null;
+  program: WebGLProgram | null;
+  buffer: WebGLBuffer | null;
+  uniforms: GLUniforms | null;
   displayWidth: number;
   displayHeight: number;
-  sample: MutableFractalSample;
+  dpr: number;
+  lastCamera: FractalViewport | null;
+  motion: number;
 };
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -140,19 +295,40 @@ function cubicBezierPoint(start: ComplexPoint, controlA: ComplexPoint, controlB:
   };
 }
 
+function angleDelta(a: number, b: number) {
+  let delta = a - b;
+
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+
+  return delta;
+}
+
+function copyViewport(camera: FractalViewport): FractalViewport {
+  return {
+    center: {
+      x: camera.center.x,
+      y: camera.center.y,
+    },
+    scale: camera.scale,
+    rotation: camera.rotation,
+  };
+}
+
 function createMandelbrotFamily(): FractalFamily {
-  // These guide points keep v1 traveling through reliably interesting Mandelbrot regions
-  // without pulling traversal policy into the renderer or audio-response code.
+  // These guide points keep the macro-travel curated while the local interest scan
+  // pulls the camera onto nearby boundary-rich structure.
   const guidePoints: FractalWaypoint[] = [
     { center: { x: -0.5, y: 0 }, scale: 2.35, bend: 0.12, rotation: -0.02, hueOffset: 0.02 },
-    { center: { x: -0.785, y: 0.125 }, scale: 0.46, bend: 0.18, rotation: 0.03, hueOffset: 0.14 },
-    { center: { x: -0.7436, y: 0.1318 }, scale: 0.14, bend: -0.2, rotation: 0.06, hueOffset: 0.28 },
-    { center: { x: -0.7449, y: 0.1352 }, scale: 0.038, bend: 0.24, rotation: 0.09, hueOffset: 0.36 },
-    { center: { x: -0.5, y: 0 }, scale: 1.68, bend: -0.08, rotation: -0.03, hueOffset: 0.48 },
-    { center: { x: -1.7688, y: 0.0017 }, scale: 0.34, bend: -0.16, rotation: -0.05, hueOffset: 0.6 },
-    { center: { x: -1.2507, y: 0.0201 }, scale: 0.12, bend: 0.16, rotation: 0.04, hueOffset: 0.7 },
-    { center: { x: -0.1589, y: 1.0342 }, scale: 0.26, bend: 0.2, rotation: 0.05, hueOffset: 0.82 },
-    { center: { x: -0.7412, y: 0.1587 }, scale: 0.09, bend: -0.18, rotation: 0.08, hueOffset: 0.92 },
+    { center: { x: -0.785, y: 0.125 }, scale: 0.52, bend: 0.18, rotation: 0.03, hueOffset: 0.14 },
+    { center: { x: -0.743643887, y: 0.131825904 }, scale: 0.16, bend: -0.16, rotation: 0.06, hueOffset: 0.24 },
+    { center: { x: -0.744935, y: 0.13419 }, scale: 0.038, bend: 0.24, rotation: 0.09, hueOffset: 0.36 },
+    { center: { x: -0.5, y: 0 }, scale: 1.38, bend: -0.06, rotation: -0.03, hueOffset: 0.48 },
+    { center: { x: -1.25066, y: 0.02012 }, scale: 0.18, bend: 0.16, rotation: 0.04, hueOffset: 0.6 },
+    { center: { x: -1.76878, y: 0.00174 }, scale: 0.34, bend: -0.18, rotation: -0.05, hueOffset: 0.68 },
+    { center: { x: -0.5, y: 0 }, scale: 1.18, bend: 0.1, rotation: 0.01, hueOffset: 0.78 },
+    { center: { x: -0.15894, y: 1.03419 }, scale: 0.24, bend: 0.18, rotation: 0.05, hueOffset: 0.86 },
+    { center: { x: -0.7412, y: 0.1587 }, scale: 0.12, bend: -0.16, rotation: 0.08, hueOffset: 0.94 },
   ];
 
   return {
@@ -166,9 +342,9 @@ function createMandelbrotFamily(): FractalFamily {
         rotation: first.rotation,
       };
     },
-    getMaxIterations(scale: number) {
-      const zoomDepth = Math.log10(2.35 / Math.max(scale, 0.000001));
-      return clamp(Math.round(78 + Math.max(0, zoomDepth) * 34), 78, 188);
+    getMaxIterations(scale: number, qualityBias = 0) {
+      const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(scale, 0.000001)));
+      return clamp(Math.round(170 + zoomDepth * 92 + qualityBias * 72), 170, 640);
     },
     sample(pointX: number, pointY: number, maxIterations: number, out: MutableFractalSample) {
       let zx = 0;
@@ -220,39 +396,6 @@ function createAudioState(): AudioResponseState {
   };
 }
 
-const family = createMandelbrotFamily();
-const renderState: RenderState = {
-  displayCanvas: null,
-  displayContext: null,
-  offscreenCanvas: null,
-  offscreenContext: null,
-  imageData: null,
-  renderWidth: 0,
-  renderHeight: 0,
-  displayWidth: 0,
-  displayHeight: 0,
-  sample: {
-    escaped: false,
-    smooth: 0,
-    trap: 0,
-  },
-};
-
-const audio = createAudioState();
-const traversal: TraversalState = createTraversalState(family);
-const renderIntervalMs = 1000 / 24;
-let animationFrameId = 0;
-let lastFrameTime = 0;
-let lastRenderTime = 0;
-
-const visible = computed(() => {
-  return settings.fractalTraverse && sources.source !== null && sources.source !== AudioSource.NONE;
-});
-
-const strength = computed(() => {
-  return clamp(Number(settings.fractalTraverseStrength) || 0.84, 0.35, 1.35);
-});
-
 function createTraversalState(fractalFamily: FractalFamily): TraversalState {
   const camera = fractalFamily.getStartViewport();
   return {
@@ -270,12 +413,63 @@ function createTraversalState(fractalFamily: FractalFamily): TraversalState {
   };
 }
 
+function createInterestState(): InterestState {
+  return {
+    desiredOffset: { x: 0, y: 0 },
+    focusOffset: { x: 0, y: 0 },
+    desiredZoomGovernor: 1,
+    zoomGovernor: 1,
+    desiredZoomPermission: 1,
+    zoomPermission: 1,
+    currentScore: 0.8,
+    bestScore: 0.8,
+    lowInterestTime: 0,
+    searchPhase: 0.23,
+    lastEvaluationAt: 0,
+  };
+}
+
+const family = createMandelbrotFamily();
+const renderState: RenderState = {
+  canvas: null,
+  gl: null,
+  program: null,
+  buffer: null,
+  uniforms: null,
+  displayWidth: 0,
+  displayHeight: 0,
+  dpr: 1,
+  lastCamera: null,
+  motion: 0,
+};
+
+const audio = createAudioState();
+const traversal = createTraversalState(family);
+const interest = createInterestState();
+const reusableInterestSample: MutableFractalSample = {
+  escaped: false,
+  smooth: 0,
+  trap: 0,
+};
+
+const renderIntervalMs = 1000 / 45;
+let animationFrameId = 0;
+let lastFrameTime = 0;
+let lastRenderTime = 0;
+
+const visible = computed(() => {
+  return settings.fractalTraverse && sources.source !== null && sources.source !== AudioSource.NONE;
+});
+
+const strength = computed(() => {
+  return clamp(Number(settings.fractalTraverseStrength) || 0.84, 0.35, 1.35);
+});
+
 function calculateSegmentDuration(from: FractalWaypoint, to: FractalWaypoint) {
-  // Blend spatial distance with zoom distance so wide repositions do not feel like cuts,
-  // and deep dives still have enough time to read as deliberate travel.
+  // Blend spatial and zoom distance so transitions read as travel, not cuts.
   const spatialDistance = distance(from.center, to.center);
   const zoomDistance = Math.abs(Math.log(Math.max(from.scale, 0.000001) / Math.max(to.scale, 0.000001)));
-  return clamp(8.5 + spatialDistance * 5.2 + zoomDistance * 3.7, 8.5, 20);
+  return clamp(9.2 + spatialDistance * 5.6 + zoomDistance * 4.1, 9.2, 22);
 }
 
 function resetAudioState() {
@@ -295,6 +489,20 @@ function resetAudioState() {
   audio.loudness = 0;
 }
 
+function resetInterestState() {
+  interest.desiredOffset = { x: 0, y: 0 };
+  interest.focusOffset = { x: 0, y: 0 };
+  interest.desiredZoomGovernor = 1;
+  interest.zoomGovernor = 1;
+  interest.desiredZoomPermission = 1;
+  interest.zoomPermission = 1;
+  interest.currentScore = 0.8;
+  interest.bestScore = 0.8;
+  interest.lowInterestTime = 0;
+  interest.searchPhase = 0.23;
+  interest.lastEvaluationAt = 0;
+}
+
 function resetTraversalState() {
   const start = family.getStartViewport();
   traversal.currentIndex = 0;
@@ -308,6 +516,8 @@ function resetTraversalState() {
   traversal.palettePhase = family.guidePoints[0].hueOffset;
   traversal.segmentSeed = 0.37;
   traversal.camera = start;
+  renderState.lastCamera = null;
+  renderState.motion = 0;
 }
 
 function advanceSegment() {
@@ -321,54 +531,362 @@ function advanceSegment() {
   traversal.segmentSeed += 1.61803398875;
 }
 
-function ensureContexts() {
+function createShader(gl: WebGLRenderingContext, type: number, source: string) {
+  const shader = gl.createShader(type);
+
+  if (!shader) return null;
+
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+
+  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    return shader;
+  }
+
+  console.warn("FractalTraverse shader compile failed:", gl.getShaderInfoLog(shader));
+  gl.deleteShader(shader);
+  return null;
+}
+
+function createProgram(gl: WebGLRenderingContext, vertexSource: string, fragmentSource: string) {
+  const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+
+  if (!vertexShader || !fragmentShader) {
+    if (vertexShader) gl.deleteShader(vertexShader);
+    if (fragmentShader) gl.deleteShader(fragmentShader);
+    return null;
+  }
+
+  const program = gl.createProgram();
+
+  if (!program) {
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    return null;
+  }
+
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragmentShader);
+
+  if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    return program;
+  }
+
+  console.warn("FractalTraverse program link failed:", gl.getProgramInfoLog(program));
+  gl.deleteProgram(program);
+  return null;
+}
+
+function destroyRenderer() {
+  if (renderState.gl && renderState.buffer) {
+    renderState.gl.deleteBuffer(renderState.buffer);
+  }
+
+  if (renderState.gl && renderState.program) {
+    renderState.gl.deleteProgram(renderState.program);
+  }
+
+  renderState.canvas = null;
+  renderState.gl = null;
+  renderState.program = null;
+  renderState.buffer = null;
+  renderState.uniforms = null;
+  renderState.displayWidth = 0;
+  renderState.displayHeight = 0;
+  renderState.dpr = 1;
+  renderState.lastCamera = null;
+  renderState.motion = 0;
+}
+
+function ensureRenderer() {
   if (!canvas.value) return false;
 
-  if (renderState.displayCanvas !== canvas.value) {
-    renderState.displayCanvas = canvas.value;
-    renderState.displayContext = canvas.value.getContext("2d");
+  if (renderState.canvas === canvas.value && renderState.gl && renderState.program && renderState.buffer && renderState.uniforms) {
+    return true;
   }
 
-  if (!renderState.offscreenCanvas) {
-    renderState.offscreenCanvas = document.createElement("canvas");
-    renderState.offscreenContext = renderState.offscreenCanvas.getContext("2d");
+  destroyRenderer();
+
+  const gl =
+    canvas.value.getContext("webgl", {
+      alpha: true,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      premultipliedAlpha: true,
+      preserveDrawingBuffer: false,
+    }) ||
+    canvas.value.getContext("experimental-webgl", {
+      alpha: true,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      premultipliedAlpha: true,
+      preserveDrawingBuffer: false,
+    });
+
+  if (!gl) {
+    console.warn("FractalTraverse could not create a WebGL context.");
+    return false;
   }
 
-  return Boolean(renderState.displayContext && renderState.offscreenCanvas && renderState.offscreenContext);
+  const context = gl as WebGLRenderingContext;
+  const program = createProgram(context, VERTEX_SHADER_SOURCE, FRAGMENT_SHADER_SOURCE);
+
+  if (!program) {
+    return false;
+  }
+
+  const buffer = context.createBuffer();
+  if (!buffer) {
+    context.deleteProgram(program);
+    return false;
+  }
+
+  context.useProgram(program);
+  context.bindBuffer(context.ARRAY_BUFFER, buffer);
+  context.bufferData(context.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), context.STATIC_DRAW);
+
+  const positionLocation = context.getAttribLocation(program, "aPosition");
+  if (positionLocation < 0) {
+    context.deleteBuffer(buffer);
+    context.deleteProgram(program);
+    return false;
+  }
+
+  context.enableVertexAttribArray(positionLocation);
+  context.vertexAttribPointer(positionLocation, 2, context.FLOAT, false, 0, 0);
+  context.disable(context.DEPTH_TEST);
+  context.disable(context.CULL_FACE);
+  context.clearColor(0, 0, 0, 0);
+
+  renderState.canvas = canvas.value;
+  renderState.gl = context;
+  renderState.program = program;
+  renderState.buffer = buffer;
+  renderState.uniforms = {
+    resolution: context.getUniformLocation(program, "uResolution"),
+    center: context.getUniformLocation(program, "uCenter"),
+    scale: context.getUniformLocation(program, "uScale"),
+    rotation: context.getUniformLocation(program, "uRotation"),
+    aspect: context.getUniformLocation(program, "uAspect"),
+    palettePhase: context.getUniformLocation(program, "uPalettePhase"),
+    ambientLift: context.getUniformLocation(program, "uAmbientLift"),
+    paletteEnergy: context.getUniformLocation(program, "uPaletteEnergy"),
+    stableAA: context.getUniformLocation(program, "uStableAA"),
+    maxIterations: context.getUniformLocation(program, "uMaxIterations"),
+  };
+
+  return true;
 }
 
 function updateRenderResolution() {
-  if (!ensureContexts() || !canvas.value || !renderState.offscreenCanvas || !renderState.offscreenContext) return;
+  if (!ensureRenderer() || !canvas.value || !renderState.gl) return;
 
   const width = Math.max(1, Math.round(viewport.width || window.innerWidth || 1));
   const height = Math.max(1, Math.round(viewport.height || window.innerHeight || 1));
-  const aspectRatio = width / Math.max(height, 1);
-  const maxPixels = width < 900 ? 92_000 : 132_000;
-  const renderHeight = clamp(Math.round(Math.sqrt(maxPixels / Math.max(aspectRatio, 0.55))), 200, 320);
-  const renderWidth = clamp(Math.round(renderHeight * aspectRatio), 180, 540);
-  const devicePixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
-  const displayWidth = Math.round(width * devicePixelRatio);
-  const displayHeight = Math.round(height * devicePixelRatio);
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const displayWidth = Math.round(width * dpr);
+  const displayHeight = Math.round(height * dpr);
 
-  if (renderState.displayWidth === displayWidth && renderState.displayHeight === displayHeight && renderState.renderWidth === renderWidth && renderState.renderHeight === renderHeight) {
+  if (renderState.displayWidth === displayWidth && renderState.displayHeight === displayHeight && renderState.dpr === dpr) {
     return;
   }
 
   renderState.displayWidth = displayWidth;
   renderState.displayHeight = displayHeight;
-  renderState.renderWidth = renderWidth;
-  renderState.renderHeight = renderHeight;
-  renderState.imageData = renderState.offscreenContext.createImageData(renderWidth, renderHeight);
+  renderState.dpr = dpr;
 
   canvas.value.width = displayWidth;
   canvas.value.height = displayHeight;
-  renderState.offscreenCanvas.width = renderWidth;
-  renderState.offscreenCanvas.height = renderHeight;
+  renderState.gl.viewport(0, 0, displayWidth, displayHeight);
+}
 
-  if (renderState.displayContext) {
-    renderState.displayContext.imageSmoothingEnabled = true;
-    renderState.displayContext.imageSmoothingQuality = "high";
+function evaluateInterest(center: ComplexPoint, scale: number, aspectRatio: number): InterestMetrics {
+  const columns = 6;
+  const rows = 6;
+  const escapedFlags: boolean[] = [];
+  const values: number[] = [];
+  const iterations = clamp(Math.round(62 + Math.max(0, Math.log2(2.35 / Math.max(scale, 0.000001))) * 20), 62, 144);
+  const spanY = scale * 0.78;
+  const spanX = spanY * Math.min(aspectRatio, 1.9) * 0.84;
+  let valueSum = 0;
+  let escapedCount = 0;
+  let trapDetailSum = 0;
+
+  for (let row = 0; row < rows; row++) {
+    const rowT = rows === 1 ? 0 : row / (rows - 1);
+    const offsetY = (rowT - 0.5) * spanY;
+
+    for (let column = 0; column < columns; column++) {
+      const columnT = columns === 1 ? 0 : column / (columns - 1);
+      const offsetX = (columnT - 0.5) * spanX;
+
+      family.sample(center.x + offsetX, center.y + offsetY, iterations, reusableInterestSample);
+
+      const normalized = clamp(reusableInterestSample.smooth / iterations, 0, 1);
+      const trapGlow = Math.exp(-reusableInterestSample.trap * 5.2);
+      const fieldValue = reusableInterestSample.escaped ? normalized : 1 + trapGlow * 0.16;
+
+      escapedFlags.push(reusableInterestSample.escaped);
+      values.push(fieldValue);
+      valueSum += fieldValue;
+      trapDetailSum += trapGlow;
+
+      if (reusableInterestSample.escaped) {
+        escapedCount++;
+      }
+    }
   }
+
+  const mean = valueSum / values.length;
+  const escapedRatio = escapedCount / values.length;
+  const trapDetail = trapDetailSum / values.length;
+  let variance = 0;
+  let edgeScore = 0;
+  let edgeCount = 0;
+
+  for (let index = 0; index < values.length; index++) {
+    variance += Math.pow(values[index] - mean, 2);
+
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+
+    if (column < columns - 1) {
+      const neighborIndex = index + 1;
+      const difference = Math.abs(values[index] - values[neighborIndex]);
+      edgeScore += (escapedFlags[index] !== escapedFlags[neighborIndex] ? 1 : 0) + clamp(difference * 2.2, 0, 1);
+      edgeCount++;
+    }
+
+    if (row < rows - 1) {
+      const neighborIndex = index + columns;
+      const difference = Math.abs(values[index] - values[neighborIndex]);
+      edgeScore += (escapedFlags[index] !== escapedFlags[neighborIndex] ? 1 : 0) + clamp(difference * 2.2, 0, 1);
+      edgeCount++;
+    }
+  }
+
+  variance /= values.length;
+
+  const boundaryDensity = edgeCount > 0 ? edgeScore / (edgeCount * 1.9) : 0;
+  const mixedness = 1 - clamp(Math.abs(escapedRatio - 0.5) * 2.2, 0, 1);
+
+  // The score favors escape-time contrast plus escape/interior mixing, and explicitly
+  // punishes uniform voids so we stop lingering in flat exterior or deep interior space.
+  const uniformPenalty =
+    clamp(0.08 - variance, 0, 0.08) * 6.2 +
+    clamp(0.15 - boundaryDensity, 0, 0.15) * 4.4 +
+    (escapedRatio < 0.06 || escapedRatio > 0.94 ? 0.34 : 0);
+  const score = boundaryDensity * 1.45 + variance * 1.08 + mixedness * 0.58 + trapDetail * 0.34 - uniformPenalty * 1.22;
+
+  return {
+    center,
+    scale,
+    score,
+    boundaryDensity,
+    variation: variance,
+    mixedness,
+    trapDetail,
+  };
+}
+
+function scanNearbyInterest(baseCenter: ComplexPoint, baseScale: number, aspectRatio: number) {
+  const base = evaluateInterest(baseCenter, baseScale, aspectRatio);
+  const lowInterest = base.score < 0.54 || interest.lowInterestTime > 0.3;
+  const searchRadius = clamp(baseScale * (lowInterest ? 0.82 : 0.58), 0.02, 0.84);
+  const scaleFactors = lowInterest ? [1.24, 1.08, 1, 0.92] : [1.08, 1, 0.92];
+  const ringFactors = [0, 0.42, 0.76];
+  let best = base;
+
+  for (const ringFactor of ringFactors) {
+    const radialDistance = searchRadius * ringFactor;
+    const samplesOnRing = ringFactor === 0 ? 1 : 8;
+
+    for (let step = 0; step < samplesOnRing; step++) {
+      const angle = interest.searchPhase + (step / Math.max(1, samplesOnRing)) * Math.PI * 2;
+      const offset = {
+        x: Math.cos(angle) * radialDistance * Math.min(aspectRatio, 1.85),
+        y: Math.sin(angle) * radialDistance,
+      };
+
+      for (const scaleFactor of scaleFactors) {
+        const candidateCenter = {
+          x: baseCenter.x + offset.x,
+          y: baseCenter.y + offset.y,
+        };
+        const candidateScale = clamp(baseScale * scaleFactor, 0.02, 3.2);
+        const metrics = evaluateInterest(candidateCenter, candidateScale, aspectRatio);
+        const continuityPenalty =
+          (ringFactor > 0 ? ringFactor * 0.06 : 0) +
+          Math.abs(Math.log(candidateScale / baseScale)) * 0.1;
+        const adjustedScore = metrics.score - continuityPenalty;
+
+        if (adjustedScore > best.score) {
+          best = {
+            ...metrics,
+            score: adjustedScore,
+          };
+        }
+      }
+    }
+  }
+
+  return { base, best };
+}
+
+function updateInterestGuidance(baseCenter: ComplexPoint, baseScale: number, deltaSeconds: number, now: number) {
+  const aspectRatio = Math.max((viewport.width || window.innerWidth || 1) / Math.max(viewport.height || window.innerHeight || 1, 1), 0.6);
+
+  if (!interest.lastEvaluationAt || now - interest.lastEvaluationAt >= 560) {
+    const { base, best } = scanNearbyInterest(baseCenter, baseScale, aspectRatio);
+    const betterNearby = best.score > base.score + 0.09;
+
+    interest.currentScore = base.score;
+    interest.bestScore = best.score;
+    interest.lastEvaluationAt = now;
+    interest.searchPhase = (interest.searchPhase + 0.76 + audio.bend * 0.24) % (Math.PI * 2);
+
+    if (base.score < 0.52) {
+      interest.lowInterestTime = clamp(interest.lowInterestTime + 0.56 * (betterNearby ? 1.15 : 0.72), 0, 4.5);
+    } else {
+      interest.lowInterestTime = Math.max(0, interest.lowInterestTime - 0.7);
+    }
+
+    if (betterNearby) {
+      interest.desiredOffset = {
+        x: best.center.x - baseCenter.x,
+        y: best.center.y - baseCenter.y,
+      };
+    } else {
+      interest.desiredOffset = {
+        x: 0,
+        y: 0,
+      };
+    }
+
+    // When the current view stays low-interest, ease off the zoom-in pressure and allow
+    // a gentle zoom-out toward better structure instead of drilling deeper into empty space.
+    interest.desiredZoomGovernor =
+      base.score < 0.5
+        ? Math.max(1, betterNearby ? best.scale / baseScale : 1 + (0.5 - base.score) * 0.34)
+        : 1;
+    interest.desiredZoomPermission =
+      base.score < 0.5
+        ? clamp((base.score - 0.2) / 0.3, 0.18, 0.92)
+        : 1;
+  }
+
+  const retargetStrength = 1.2 + clamp(interest.lowInterestTime / 1.6, 0, 1) * 2.6;
+
+  interest.focusOffset.x = damp(interest.focusOffset.x, interest.desiredOffset.x, retargetStrength, deltaSeconds);
+  interest.focusOffset.y = damp(interest.focusOffset.y, interest.desiredOffset.y, retargetStrength, deltaSeconds);
+  interest.zoomGovernor = damp(interest.zoomGovernor, interest.desiredZoomGovernor, retargetStrength, deltaSeconds);
+  interest.zoomPermission = damp(interest.zoomPermission, interest.desiredZoomPermission, retargetStrength, deltaSeconds);
 }
 
 function updateAudioResponse(deltaSeconds: number) {
@@ -389,8 +907,8 @@ function updateAudioResponse(deltaSeconds: number) {
   audio.fastEnergy += (feature - audio.fastEnergy) * fastAlpha;
   audio.slowEnergy += (feature - audio.slowEnergy) * slowAlpha;
 
-  // Fast-vs-slow energy gives us change sensitivity, so steady loud passages stay graceful
-  // while fresh motion in the music gets the stronger zoom and palette response.
+  // Fast-vs-slow energy keeps the motion alive in quiet passages while making relative
+  // changes matter more than sustained loudness.
   const novelty = Math.max(0, audio.fastEnergy - audio.slowEnergy);
   audio.noveltyHistory.push(novelty);
   if (audio.noveltyHistory.length > 48) {
@@ -437,10 +955,11 @@ function updateAudioResponse(deltaSeconds: number) {
   );
 }
 
-function updateTraversal(deltaSeconds: number) {
+function updateTraversal(deltaSeconds: number, now: number) {
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
-  const baseSpeed = 0.94 + audio.ambient * 0.12;
-  const speedTarget = baseSpeed + audio.zoom * 0.16 * reactivity;
+  const baseSpeed = 0.92 + audio.ambient * 0.12;
+  const lowInterestDrag = clamp(interest.lowInterestTime * 0.04, 0, 0.16);
+  const speedTarget = clamp(baseSpeed + audio.zoom * 0.16 * reactivity - lowInterestDrag, 0.76, 1.28);
 
   traversal.pathSpeed = damp(traversal.pathSpeed, speedTarget, 2.6, deltaSeconds);
   traversal.progress += (deltaSeconds / traversal.segmentDuration) * traversal.pathSpeed;
@@ -455,8 +974,6 @@ function updateTraversal(deltaSeconds: number) {
   const from = family.guidePoints[traversal.currentIndex];
   const to = family.guidePoints[traversal.nextIndex];
   const easedPath = smoothStep(traversal.progress);
-  const zoomProgress = clamp(traversal.progress + audio.zoom * 0.08 * reactivity * (1 - traversal.progress), 0, 1);
-  const easedZoom = smoothStep(zoomProgress);
   const directionX = to.center.x - from.center.x;
   const directionY = to.center.y - from.center.y;
   const directionLength = Math.hypot(directionX, directionY);
@@ -479,85 +996,70 @@ function updateTraversal(deltaSeconds: number) {
     y: to.center.y - unitY * segmentSpan * 0.3 - normalY * bendLift * 0.86,
   };
   const pathPoint = cubicBezierPoint(from.center, controlA, controlB, to.center, easedPath);
-  const baseScale = Math.exp(lerp(Math.log(from.scale), Math.log(to.scale), easedZoom));
-  const driftAmplitude = baseScale * (0.035 + audio.ambient * 0.022 + audio.bend * 0.018);
+  const baseScale = Math.exp(lerp(Math.log(from.scale), Math.log(to.scale), smoothStep(clamp(traversal.progress, 0, 1))));
+
+  updateInterestGuidance(pathPoint, baseScale, deltaSeconds, now);
+
+  const driftAmplitude = baseScale * (0.03 + audio.ambient * 0.02 + audio.bend * 0.017);
   const driftX = Math.cos(traversal.driftPhase + traversal.segmentSeed * 0.73) * driftAmplitude * 0.78;
   const driftY = Math.sin(traversal.driftPhase * 0.94 - traversal.segmentSeed * 0.41) * driftAmplitude * 0.55;
   const rotationTarget =
     lerp(from.rotation, to.rotation, easedPath) +
     Math.sin(traversal.bendPhase * 0.62 + traversal.segmentSeed) * (0.012 + audio.bend * 0.04);
+  const audioZoomFactor = 1 - audio.zoom * 0.045 * reactivity * interest.zoomPermission;
 
   traversal.rotation = damp(traversal.rotation, rotationTarget, 2.5, deltaSeconds);
   traversal.camera = {
     center: {
-      x: pathPoint.x + driftX,
-      y: pathPoint.y + driftY,
+      x: pathPoint.x + interest.focusOffset.x + driftX,
+      y: pathPoint.y + interest.focusOffset.y + driftY,
     },
-    scale: baseScale * (1 - audio.zoom * 0.04 * reactivity),
+    scale: clamp(baseScale * interest.zoomGovernor * audioZoomFactor, 0.02, 3.2),
     rotation: traversal.rotation,
   };
 }
 
-function renderFractal() {
-  if (!ensureContexts() || !renderState.displayContext || !renderState.offscreenCanvas || !renderState.offscreenContext || !renderState.imageData) {
+function renderFractal(deltaSeconds: number) {
+  if (!ensureRenderer() || !renderState.gl || !renderState.program || !renderState.uniforms) {
     return;
   }
 
-  const pixels = renderState.imageData.data;
-  const width = renderState.renderWidth;
-  const height = renderState.renderHeight;
-  const aspectRatio = width / Math.max(height, 1);
-  const cosRotation = Math.cos(traversal.camera.rotation);
-  const sinRotation = Math.sin(traversal.camera.rotation);
-  const maxIterations = family.getMaxIterations(traversal.camera.scale);
-  const palettePhase = (traversal.palettePhase + family.guidePoints[traversal.currentIndex].hueOffset) % 1;
-  const ambientLift = 0.05 + audio.ambient * 0.06;
-  const paletteEnergy = 0.12 + audio.palette * 0.12;
-  const sample = renderState.sample;
+  const gl = renderState.gl;
+  const uniforms = renderState.uniforms;
+  const aspectRatio = renderState.displayWidth / Math.max(renderState.displayHeight, 1);
+  const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(traversal.camera.scale, 0.000001)));
+  const dprBias = Math.max(0, Math.sqrt(renderState.dpr) - 1);
+  const centerMotion = renderState.lastCamera
+    ? distance(renderState.lastCamera.center, traversal.camera.center) / Math.max(traversal.camera.scale, 0.000001)
+    : 0;
+  const zoomMotion = renderState.lastCamera
+    ? Math.abs(Math.log(renderState.lastCamera.scale / traversal.camera.scale))
+    : 0;
+  const rotationMotion = renderState.lastCamera
+    ? Math.abs(angleDelta(traversal.camera.rotation, renderState.lastCamera.rotation))
+    : 0;
+  const motionTarget = centerMotion + zoomMotion * 1.8 + rotationMotion * 0.55;
 
-  for (let y = 0; y < height; y++) {
-    const normalizedY = (y + 0.5) / height - 0.5;
+  renderState.motion = damp(renderState.motion, motionTarget, 10, deltaSeconds);
 
-    for (let x = 0; x < width; x++) {
-      const normalizedX = (x + 0.5) / width - 0.5;
-      const rotatedX = (normalizedX * aspectRatio * traversal.camera.scale) * cosRotation - (normalizedY * traversal.camera.scale) * sinRotation;
-      const rotatedY = (normalizedX * aspectRatio * traversal.camera.scale) * sinRotation + (normalizedY * traversal.camera.scale) * cosRotation;
+  const stableAA = clamp(1 - renderState.motion * 12, 0, 1);
+  const maxIterations = family.getMaxIterations(traversal.camera.scale, clamp(stableAA + dprBias + zoomDepth * 0.08, 0, 1.4));
 
-      family.sample(traversal.camera.center.x + rotatedX, traversal.camera.center.y + rotatedY, maxIterations, sample);
+  gl.useProgram(renderState.program);
+  gl.uniform2f(uniforms.resolution, renderState.displayWidth, renderState.displayHeight);
+  gl.uniform2f(uniforms.center, traversal.camera.center.x, traversal.camera.center.y);
+  gl.uniform1f(uniforms.scale, traversal.camera.scale);
+  gl.uniform1f(uniforms.rotation, traversal.camera.rotation);
+  gl.uniform1f(uniforms.aspect, aspectRatio);
+  gl.uniform1f(uniforms.palettePhase, (traversal.palettePhase + family.guidePoints[traversal.currentIndex].hueOffset) % 1);
+  gl.uniform1f(uniforms.ambientLift, 0.07 + audio.ambient * 0.08);
+  gl.uniform1f(uniforms.paletteEnergy, 0.14 + audio.palette * 0.14);
+  gl.uniform1f(uniforms.stableAA, stableAA);
+  gl.uniform1i(uniforms.maxIterations, maxIterations);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-      const normalizedIteration = clamp(sample.smooth / maxIterations, 0, 1);
-      const trapGlow = Math.exp(-sample.trap * (8.2 - audio.palette * 1.8));
-      const paletteT = palettePhase + normalizedIteration * 0.82 + trapGlow * 0.16;
-      const wave = Math.PI * 2;
-      const redWave = 0.5 + 0.5 * Math.cos(wave * (paletteT + 0.02));
-      const greenWave = 0.5 + 0.5 * Math.cos(wave * (paletteT + 0.21));
-      const blueWave = 0.5 + 0.5 * Math.cos(wave * (paletteT + 0.47));
-      const vignette = clamp(1.08 - (normalizedX * normalizedX + normalizedY * normalizedY) * 1.42, 0.68, 1.08);
-      const pixelIndex = (y * width + x) * 4;
-
-      if (!sample.escaped) {
-        const interior = (0.018 + trapGlow * 0.12 + ambientLift * 0.8) * vignette;
-        pixels[pixelIndex] = Math.min(255, interior * 26);
-        pixels[pixelIndex + 1] = Math.min(255, interior * 36);
-        pixels[pixelIndex + 2] = Math.min(255, interior * 58);
-        pixels[pixelIndex + 3] = 255;
-        continue;
-      }
-
-      const boundary = Math.pow(normalizedIteration, 1.16);
-      const shimmer = 0.14 + paletteEnergy + trapGlow * 0.34;
-      const brightness = (ambientLift + boundary * 0.66 + shimmer) * vignette;
-
-      pixels[pixelIndex] = Math.min(255, (0.1 + redWave * 0.9) * brightness * 255);
-      pixels[pixelIndex + 1] = Math.min(255, (0.08 + greenWave * 0.72) * brightness * 255);
-      pixels[pixelIndex + 2] = Math.min(255, (0.18 + blueWave * 0.96) * brightness * 255);
-      pixels[pixelIndex + 3] = 255;
-    }
-  }
-
-  renderState.offscreenContext.putImageData(renderState.imageData, 0, 0);
-  renderState.displayContext.clearRect(0, 0, renderState.displayWidth, renderState.displayHeight);
-  renderState.displayContext.drawImage(renderState.offscreenCanvas, 0, 0, renderState.displayWidth, renderState.displayHeight);
+  renderState.lastCamera = copyViewport(traversal.camera);
 }
 
 function animate(now: number) {
@@ -578,12 +1080,12 @@ function animate(now: number) {
   lastFrameTime = now;
 
   updateAudioResponse(deltaSeconds);
-  updateTraversal(deltaSeconds);
+  updateTraversal(deltaSeconds, now);
 
   if (now - lastRenderTime < renderIntervalMs) return;
 
   lastRenderTime = now;
-  renderFractal();
+  renderFractal(deltaSeconds);
 }
 
 watch(
@@ -591,11 +1093,13 @@ watch(
   (isVisible) => {
     if (!isVisible) {
       resetAudioState();
+      resetInterestState();
       lastFrameTime = 0;
       return;
     }
 
     resetTraversalState();
+    resetInterestState();
     resetAudioState();
     lastFrameTime = 0;
     lastRenderTime = 0;
@@ -604,11 +1108,27 @@ watch(
 );
 
 watch(
-  () => [viewport.width, viewport.height, canvas.value],
+  () => canvas.value,
+  (nextCanvas) => {
+    if (!nextCanvas) {
+      destroyRenderer();
+      return;
+    }
+
+    if (!visible.value) return;
+
+    ensureRenderer();
+    updateRenderResolution();
+    renderFractal(1 / 60);
+  }
+);
+
+watch(
+  () => [viewport.width, viewport.height],
   () => {
     if (!visible.value) return;
     updateRenderResolution();
-    renderFractal();
+    renderFractal(1 / 60);
   }
 );
 
@@ -617,6 +1137,7 @@ watch(
   () => {
     if (!visible.value) return;
     resetAudioState();
+    resetInterestState();
     lastFrameTime = 0;
   }
 );
@@ -627,6 +1148,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(animationFrameId);
+  destroyRenderer();
 });
 </script>
 
