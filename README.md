@@ -40,7 +40,7 @@ To install the free BlackHole path and open the right macOS tool:
 
 For Spotify locally:
 
-1. Copy [`.env.local.example`](/Users/henry/kaleidosync/.env.local.example) to `.env.local`.
+1. Copy [`./.env.local.example`](./.env.local.example) to `.env.local`.
 2. Fill in `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, and keep `SPOTIFY_REDIRECT_URI=http://127.0.0.1:3001/api/spotify/callback`.
 3. In the Spotify Developer Dashboard, register that exact redirect URI.
 4. Use `http://127.0.0.1:5173` instead of `localhost` for the frontend URL.
