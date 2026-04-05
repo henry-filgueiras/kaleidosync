@@ -16,7 +16,7 @@
         <span>Peak {{ peakPercent }}%</span>
       </div>
 
-      <p class="hint">Pause Spotify. If this still jumps, ambient audio is getting through.</p>
+      <p class="hint">This reads the raw input signal. Pause Spotify: it should fall near zero unless ambient audio is getting through.</p>
     </aside>
   </Transition>
 </template>
@@ -24,17 +24,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { AudioSource } from "@wearesage/shared";
+import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { useSources } from "../stores/sources";
 
 const sources = useSources();
+const liveLevel = ref(0);
 const peak = ref(0);
+let analyserBuffer: Uint8Array | null = null;
 
 const visible = computed(() => {
   return sources.source === AudioSource.MICROPHONE || sources.source === AudioSource.BROWSER_AUDIO;
 });
 
 const levelPercent = computed(() => {
-  return Math.max(0, Math.min(100, Math.round(Number(sources.volume) * 100)));
+  return Math.max(0, Math.min(100, Math.round(liveLevel.value * 100)));
 });
 
 const peakPercent = computed(() => {
@@ -60,9 +63,45 @@ watch(
 watch(
   () => visible.value,
   (isVisible) => {
-    if (!isVisible) peak.value = 0;
+    if (!isVisible) {
+      peak.value = 0;
+      liveLevel.value = 0;
+    }
   }
 );
+
+function sampleAnalyserLevel() {
+  if (!visible.value) return 0;
+
+  const analyser = audioSystem.getAnalyserNode();
+  if (!analyser) return 0;
+
+  if (!analyserBuffer || analyserBuffer.length !== analyser.fftSize) {
+    analyserBuffer = new Uint8Array(analyser.fftSize);
+  }
+
+  analyser.getByteTimeDomainData(analyserBuffer);
+
+  let sumSquares = 0;
+  for (let i = 0; i < analyserBuffer.length; i++) {
+    const centered = (analyserBuffer[i] - 128) / 128;
+    sumSquares += centered * centered;
+  }
+
+  const rms = Math.sqrt(sumSquares / analyserBuffer.length);
+
+  // Give the meter enough gain to show real program material,
+  // while letting silence settle back near zero.
+  return Math.max(0, Math.min(1, rms * 6));
+}
+
+const sampler = window.setInterval(() => {
+  if (!visible.value) return;
+
+  const nextLevel = sampleAnalyserLevel();
+  const isFalling = nextLevel < liveLevel.value;
+  liveLevel.value = isFalling ? liveLevel.value * 0.72 + nextLevel * 0.28 : nextLevel;
+}, 70);
 
 const peakDecay = window.setInterval(() => {
   if (!visible.value) return;
@@ -72,6 +111,7 @@ const peakDecay = window.setInterval(() => {
 }, 120);
 
 onBeforeUnmount(() => {
+  window.clearInterval(sampler);
   window.clearInterval(peakDecay);
 });
 </script>
