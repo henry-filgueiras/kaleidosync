@@ -10,6 +10,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AudioDebugMeter: typeof import('./src/components/AudioDebugMeter.vue')['default']
     AudioSources: typeof import('./src/components/AudioSources.vue')['default']
+    BeatHorizon: typeof import('./src/components/BeatHorizon.vue')['default']
     HomepageHero: typeof import('./src/components/HomepageHero.vue')['default']
     Menu: typeof import('./src/components/Menu.vue')['default']
     MenuHeader: typeof import('./src/components/MenuHeader.vue')['default']
