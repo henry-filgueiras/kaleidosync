@@ -5,7 +5,8 @@
 </template>
 
 <script setup lang="ts">
-import { View, Shader, useSketches, useSources, useClickOnce } from "@wearesage/vue";
+import { View, Shader, useSketches, useClickOnce } from "@wearesage/vue";
+import { useSources } from "../stores/sources";
 
 const sketches = useSketches();
 const sources = useSources();

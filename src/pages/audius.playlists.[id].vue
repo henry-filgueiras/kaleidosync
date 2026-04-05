@@ -12,9 +12,10 @@
 </template>
 
 <script setup lang="ts">
-import { View, Column, Record, AudiusPlaylistBody, useRouteParamId, useGetAudiusPlaylistById, useQueue, useSources, useRouter, adaptTrack } from "@wearesage/vue";
+import { View, Column, Record, AudiusPlaylistBody, useRouteParamId, useGetAudiusPlaylistById, useQueue, useRouter, adaptTrack } from "@wearesage/vue";
 import { AudioSource } from "@wearesage/shared";
 import type { QueueTrack } from "@wearesage/vue";
+import { useSources } from "../stores/sources";
 
 const id = useRouteParamId();
 const playlist = useGetAudiusPlaylistById(id);

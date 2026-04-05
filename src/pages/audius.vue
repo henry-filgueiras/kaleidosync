@@ -20,10 +20,10 @@ import {
   useAudius,
   useRouter,
   useQueue,
-  useSources,
   adaptTrack
 } from "@wearesage/vue";
 import { AudioSource } from "@wearesage/shared";
+import { useSources } from "../stores/sources";
 
 const audius = useAudius();
 const router = useRouter();

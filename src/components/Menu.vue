@@ -25,8 +25,9 @@
 </template>
 
 <script setup lang="ts">
-import { IconButton, useViewport, useSources, useNativeShare, AudioSourceButton } from "@wearesage/vue";
+import { IconButton, useViewport, useNativeShare, AudioSourceButton } from "@wearesage/vue";
 import { AudioSource } from "@wearesage/shared";
+import { useSources } from "../stores/sources";
 
 defineEmits(["open-sources", "open-designs"]);
 

@@ -46,7 +46,6 @@ import {
   SketchMesh,
   useRAF,
   useSketches,
-  useSources,
   useAnimation,
   useViewport,
   useDevice,
@@ -54,6 +53,7 @@ import {
   useRoute,
   useUI
 } from "@wearesage/vue";
+import { useSources } from "../stores/sources";
 
 const raf = useRAF();
 const sketches = useSketches();
