@@ -13,6 +13,7 @@ declare module 'vue' {
     HomepageHero: typeof import('./src/components/HomepageHero.vue')['default']
     Menu: typeof import('./src/components/Menu.vue')['default']
     MenuHeader: typeof import('./src/components/MenuHeader.vue')['default']
+    PrismVeil: typeof import('./src/components/PrismVeil.vue')['default']
     Renderer: typeof import('./src/components/Renderer.vue')['default']
   }
 }

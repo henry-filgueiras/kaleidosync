@@ -5,14 +5,16 @@
       <Column align="end" cascade>
         <Toggle label="Disable Flashing" v-model="settings.disableFlashing" />
         <Toggle label="Neon Mode" v-model="settings.neonMode" />
+        <Toggle label="Prism Veil" v-model="settings.prismVeil" />
         <Toggle label="Show Menu Labels" v-model="settings.showMenuLabels" />
         <Toggle label="Always Show Track" v-model="settings.alwaysShowTrack" />
         <Toggle label="Auto Cycle Presets" v-model="settings.autoCyclePresets" />
         <Toggle label="Audio-Reactive Cycling" v-model="settings.audioReactiveCycling" />
         <Toggle label="Infinity Play" v-model="settings.infinityPlay" />
         <Toggle label="Prefer Lossless Audio" v-model="settings.preferLossless" />
+        <RangeInput label="Veil Strength" v-model="settings.prismVeilStrength" :min="0.35" :max="1.35" :step="0.01" />
         <RangeInput label="Cycle Rate" v-model="settings.cycleRate" :min="0.35" :max="1.4" :step="0.01" />
-        <p class="hint">Auto cycling advances on a timer and can also respond to stronger audio peaks after a cooldown.</p>
+        <p class="hint">Prism Veil adds a soft audio-reactive light layer over any preset. Auto cycling still advances on a timer and can also respond to stronger peaks.</p>
       </Column>
     </nav>
   </View>

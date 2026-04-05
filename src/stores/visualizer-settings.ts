@@ -46,6 +46,8 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const autoCyclePresets = createPersistedBoolean("kaleidosync.autoCyclePresets", true);
   const audioReactiveCycling = createPersistedBoolean("kaleidosync.audioReactiveCycling", true);
   const cycleRate = createPersistedNumber("kaleidosync.cycleRate", 0.85);
+  const prismVeil = createPersistedBoolean("kaleidosync.prismVeil", true);
+  const prismVeilStrength = createPersistedNumber("kaleidosync.prismVeilStrength", 0.78);
 
   return {
     disableFlashing,
@@ -57,6 +59,8 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     autoCyclePresets,
     audioReactiveCycling,
     cycleRate,
+    prismVeil,
+    prismVeilStrength,
   };
 });
 
