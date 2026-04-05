@@ -23,6 +23,7 @@ const allowedReturnHosts = new Set(
 
 const stateStore = new Map();
 const audioAnalysisCache = new Map();
+const MAX_AUDIO_ANALYSIS_CACHE_SIZE = 100;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -93,6 +94,21 @@ function buildReturnUrl(baseUrl, params) {
   return url.toString();
 }
 
+function getDefaultSpotifyReturnUrl() {
+  return sanitizeReturnUrl(process.env.SPOTIFY_DEFAULT_RETURN_URL) || "http://127.0.0.1:5173/visualizer";
+}
+
+function setCachedAudioAnalysis(trackId, data) {
+  if (!audioAnalysisCache.has(trackId) && audioAnalysisCache.size >= MAX_AUDIO_ANALYSIS_CACHE_SIZE) {
+    const oldestTrackId = audioAnalysisCache.keys().next().value;
+    if (oldestTrackId !== undefined) {
+      audioAnalysisCache.delete(oldestTrackId);
+    }
+  }
+
+  audioAnalysisCache.set(trackId, data);
+}
+
 async function exchangeAuthorizationCode(code) {
   const response = await fetch("https://accounts.spotify.com/api/token", {
     method: "POST",
@@ -147,7 +163,7 @@ async function getAudioAnalysis(trackId, accessToken) {
     throw new Error(data.error?.message || "Spotify audio analysis request failed");
   }
 
-  audioAnalysisCache.set(trackId, data);
+  setCachedAudioAnalysis(trackId, data);
 
   return data;
 }
@@ -180,8 +196,7 @@ spotifyRouter.get("/auth", (req, res) => {
 
   const returnUrl =
     sanitizeReturnUrl(req.query.returnUrl) ||
-    process.env.SPOTIFY_DEFAULT_RETURN_URL ||
-    "http://127.0.0.1:5173/visualizer";
+    getDefaultSpotifyReturnUrl();
   const state = crypto.randomUUID();
 
   stateStore.set(state, {
@@ -202,14 +217,19 @@ spotifyRouter.get("/auth", (req, res) => {
 });
 
 spotifyRouter.get("/callback", async (req, res) => {
-  const fallbackReturnUrl = process.env.SPOTIFY_DEFAULT_RETURN_URL || "http://127.0.0.1:5173/visualizer";
+  const fallbackReturnUrl = getDefaultSpotifyReturnUrl();
   const state = typeof req.query.state === "string" ? req.query.state : "";
   const code = typeof req.query.code === "string" ? req.query.code : "";
   const spotifyError = typeof req.query.error === "string" ? req.query.error : "";
-  const stateData = stateStore.get(state);
+  const stateData = state ? stateStore.get(state) : null;
   const returnUrl = stateData?.returnUrl || fallbackReturnUrl;
 
   if (state) stateStore.delete(state);
+
+  if (!state || !stateData) {
+    res.redirect(buildReturnUrl(fallbackReturnUrl, { spotify_error: "invalid_state" }));
+    return;
+  }
 
   if (spotifyError) {
     res.redirect(buildReturnUrl(returnUrl, { spotify_error: spotifyError }));

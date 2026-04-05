@@ -41,6 +41,23 @@ const spotifyBeatIndex = ref(0);
 const lastSpotifyTrackId = ref("");
 const lastSpotifyBeatKey = ref("");
 
+type BeatEntry = {
+  start: number | string;
+  duration?: number | string;
+};
+
+type SpotifyBeatAnalysis = {
+  audioAnalysis?: {
+    beats?: BeatEntry[];
+  };
+  track?: {
+    timestamp?: number | string;
+    item?: {
+      id?: string;
+    };
+  };
+};
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -103,7 +120,7 @@ function resetBeatState() {
   lastSpotifyBeatKey.value = "";
 }
 
-function getBeatDurationMs(beats: any[], index: number) {
+function getBeatDurationMs(beats: BeatEntry[], index: number) {
   const beat = beats[index];
   const nextBeat = beats[index + 1];
   const explicitDuration = Number(beat?.duration) * 1000;
@@ -140,7 +157,7 @@ function updateImpact(now: number) {
 function updateSpotifyBeat(now: number) {
   if (sources.source !== AudioSource.SPOTIFY || !spotify.playing) return false;
 
-  const analysis = spotify.analysisData as any;
+  const analysis = spotify.analysisData as SpotifyBeatAnalysis | null;
   const beats = analysis?.audioAnalysis?.beats;
   const timestamp = Number(analysis?.track?.timestamp);
   const trackId = String(analysis?.track?.item?.id || "");
