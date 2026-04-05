@@ -33,10 +33,12 @@ const phase = ref(0);
 const hue = ref(184);
 const estimatedIntervalMs = ref(0);
 const lastImpactAt = ref(0);
-const lastSampleVolume = ref(0);
 const lastHeuristicBeatAt = ref(0);
 const heuristicIntervals = ref<number[]>([]);
-const volumeHistory = ref<number[]>([]);
+const fastLogVolume = ref(0);
+const slowLogVolume = ref(0);
+const noveltyHistory = ref<number[]>([]);
+const lastNoveltyResponse = ref(0);
 const spotifyBeatIndex = ref(0);
 const lastSpotifyTrackId = ref("");
 const lastSpotifyBeatKey = ref("");
@@ -112,10 +114,12 @@ function resetBeatState() {
   phase.value = 0;
   estimatedIntervalMs.value = 0;
   lastImpactAt.value = 0;
-  lastSampleVolume.value = 0;
   lastHeuristicBeatAt.value = 0;
   heuristicIntervals.value = [];
-  volumeHistory.value = [];
+  fastLogVolume.value = 0;
+  slowLogVolume.value = 0;
+  noveltyHistory.value = [];
+  lastNoveltyResponse.value = 0;
   spotifyBeatIndex.value = 0;
   lastSpotifyBeatKey.value = "";
 }
@@ -205,23 +209,40 @@ function updateSpotifyBeat(now: number) {
 
 function updateHeuristicBeat(now: number) {
   const volume = clamp(Number(sources.volume) || 0, 0, 1);
-  const rise = volume - lastSampleVolume.value;
-  lastSampleVolume.value = volume;
+  const logVolume = Math.log1p(volume * 48) / Math.log1p(48);
+  const fastAlpha = 0.34;
+  const slowAlpha = 0.08;
 
-  volumeHistory.value.push(volume);
-  if (volumeHistory.value.length > 24) {
-    volumeHistory.value.splice(0, volumeHistory.value.length - 24);
+  fastLogVolume.value += (logVolume - fastLogVolume.value) * fastAlpha;
+  slowLogVolume.value += (logVolume - slowLogVolume.value) * slowAlpha;
+
+  const novelty = Math.max(0, fastLogVolume.value - slowLogVolume.value);
+
+  noveltyHistory.value.push(novelty);
+  if (noveltyHistory.value.length > 32) {
+    noveltyHistory.value.splice(0, noveltyHistory.value.length - 32);
   }
 
-  const averageVolume =
-    volumeHistory.value.length > 0
-      ? volumeHistory.value.reduce((sum, value) => sum + value, 0) / volumeHistory.value.length
-      : volume;
+  const noveltyMean =
+    noveltyHistory.value.length > 0
+      ? noveltyHistory.value.reduce((sum, value) => sum + value, 0) / noveltyHistory.value.length
+      : novelty;
+  const noveltyDeviation =
+    noveltyHistory.value.length > 1
+      ? Math.sqrt(
+          noveltyHistory.value.reduce((sum, value) => sum + Math.pow(value - noveltyMean, 2), 0) /
+            noveltyHistory.value.length
+        )
+      : noveltyMean;
+  const noveltyZ = Math.max(0, (novelty - noveltyMean) / Math.max(noveltyDeviation, 0.015));
+  const noveltyResponse = 1 - Math.exp(-2.8 * noveltyZ);
+  const responseRise = noveltyResponse - lastNoveltyResponse.value;
 
-  const threshold = Math.max(0.13, averageVolume * 1.28);
   const refractoryMs = estimatedIntervalMs.value > 0 ? Math.max(250, estimatedIntervalMs.value * 0.42) : 280;
   const sinceLastBeat = lastHeuristicBeatAt.value ? now - lastHeuristicBeatAt.value : Infinity;
-  const detectedBeat = volume > threshold && rise > Math.max(0.022, averageVolume * 0.32) && sinceLastBeat >= refractoryMs;
+  const detectedBeat = noveltyResponse > 0.52 && responseRise > 0.035 && sinceLastBeat >= refractoryMs;
+
+  lastNoveltyResponse.value = noveltyResponse;
 
   if (detectedBeat) {
     if (lastHeuristicBeatAt.value) {
@@ -257,7 +278,7 @@ function updateHeuristicBeat(now: number) {
 
     phase.value = progress;
     anticipation.value = Math.pow(clamp((progress - 0.6) / 0.4, 0, 1), 1.3) * stability;
-    confidence.value = stability * coverage;
+    confidence.value = clamp(stability * coverage * 0.88 + noveltyResponse * 0.18, 0, 1);
   } else {
     phase.value = 0;
     anticipation.value = 0;
