@@ -71,4 +71,7 @@ If you want the browser to call an absolute API origin directly instead of the l
 Spotify secrets belong in .env.local, which is gitignored.
 Start from:
   .env.local.example
+
+If you want to visualize the native Spotify macOS app through Microphone mode, use:
+  ./setup-blackhole.sh
 EOF

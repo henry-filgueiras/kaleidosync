@@ -25,6 +25,19 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 API-backed features such as Spotify and Audius use the local `/api` proxy by default.
 Point `VITE_API_BASE_URL` at the separate backend service before testing those flows.
 
+For audio-reactive visuals, there are now two practical local capture paths:
+
+- `Browser Audio` captures a shared tab or screen with audio. This is the easiest option when Spotify is playing in the browser.
+- `Microphone` still works for real input devices, including virtual loopback devices.
+
+On macOS, the native Spotify desktop app does not appear as a browser capture source. To visualize that output without room noise, route Spotify into a virtual input such as BlackHole or Loopback, then choose `Microphone` inside KaleidoSync.
+
+To install the free BlackHole path and open the right macOS tool:
+
+```bash
+./setup-blackhole.sh
+```
+
 For Spotify locally:
 
 1. Copy [`.env.local.example`](/Users/henry/kaleidosync/.env.local.example) to `.env.local`.
