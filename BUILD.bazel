@@ -19,6 +19,12 @@ sh_binary(
 )
 
 sh_binary(
+    name = "setup_blackhole",
+    srcs = ["tools/bazel/setup-blackhole.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
     name = "build",
     srcs = ["tools/bazel/build.sh"],
     visibility = ["//visibility:public"],
@@ -27,5 +33,17 @@ sh_binary(
 sh_binary(
     name = "start",
     srcs = ["tools/bazel/start.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "dev_blackhole",
+    srcs = ["tools/bazel/dev-blackhole.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "start_blackhole",
+    srcs = ["tools/bazel/start-blackhole.sh"],
     visibility = ["//visibility:public"],
 )

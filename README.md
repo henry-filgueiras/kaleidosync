@@ -53,11 +53,21 @@ bazel run //:api
 bazel run //:dev
 ```
 
+Native Spotify app path on macOS:
+
+```bash
+bazel run //:setup_blackhole
+bazel run //:dev_blackhole
+```
+
 Additional Bazel targets:
 
 - `bazel run //:api`
 - `bazel run //:build`
 - `bazel run //:start`
+- `bazel run //:setup_blackhole`
+- `bazel run //:dev_blackhole`
+- `bazel run //:start_blackhole`
 
 `bazel run //:start` serves the built frontend on port `2223` and proxies `/api/*` to `VITE_API_BASE_URL`.
 

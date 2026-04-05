@@ -3,10 +3,28 @@
 set -euo pipefail
 
 PRINT_ONLY=0
+ENSURE_ONLY=0
+SKIP_OPEN=0
 
-if [[ "${1:-}" == "--print-only" ]]; then
-  PRINT_ONLY=1
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --print-only)
+      PRINT_ONLY=1
+      ;;
+    --ensure-installed)
+      ENSURE_ONLY=1
+      ;;
+    --skip-open)
+      SKIP_OPEN=1
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Supported arguments: --print-only --ensure-installed --skip-open" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
 
 require_command() {
   local command_name="$1"
@@ -45,6 +63,10 @@ install_blackhole() {
 }
 
 open_audio_midi_setup() {
+  if [[ "$SKIP_OPEN" -eq 1 ]]; then
+    return
+  fi
+
   echo "Opening Audio MIDI Setup..."
   run_or_print open -a "Audio MIDI Setup"
 }
@@ -80,4 +102,17 @@ EOF
 
 install_blackhole
 open_audio_midi_setup
+
+if [[ "$ENSURE_ONLY" -eq 1 ]]; then
+  cat <<'EOF'
+
+BlackHole has been ensured.
+
+If this was a fresh install, reboot macOS before using it as an input device.
+When you're ready to finish routing native Spotify audio, run:
+  ./setup-blackhole.sh
+EOF
+  exit 0
+fi
+
 print_steps
