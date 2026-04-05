@@ -44,25 +44,31 @@ cat <<'EOF'
 Setup complete.
 
 Start the development server:
+  npm run api
   npm run dev
 
 Then open:
-  http://localhost:5173
+  http://127.0.0.1:5173
 
 To test the production build locally:
+  npm run api
   npm run build
   npm start
 
 Then open:
-  http://localhost:2223
+  http://127.0.0.1:2223
 
 Spotify, Audius, and other API-backed features expect a separate API server.
 By default this repo proxies /api requests to:
-  http://localhost:3001
+  http://127.0.0.1:3001
 
 If your API lives elsewhere, update:
   VITE_API_BASE_URL
 
 If you want the browser to call an absolute API origin directly instead of the local /api proxy, also set:
   VITE_API
+
+Spotify secrets belong in .env.local, which is gitignored.
+Start from:
+  .env.local.example
 EOF

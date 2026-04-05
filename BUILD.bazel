@@ -13,6 +13,12 @@ sh_binary(
 )
 
 sh_binary(
+    name = "api",
+    srcs = ["tools/bazel/api.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
     name = "build",
     srcs = ["tools/bazel/build.sh"],
     visibility = ["//visibility:public"],

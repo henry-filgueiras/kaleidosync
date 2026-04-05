@@ -21,10 +21,11 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import { useMagicKeys } from "@vueuse/core";
-import { View, useSources, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
+import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
 import { Menu, AudioSources } from "../components";
 import { useRouter } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
+import { useSources } from "../stores/sources";
 
 const router = useRouter();
 const viewport = useViewport();
@@ -44,10 +45,15 @@ onMounted(async () => {
   const queryParams = parseQueryString();
 
   if (queryParams.spotify === "connected") {
-    sources.selectSource(AudioSource.SPOTIFY);
+    void sources.selectSource(AudioSource.SPOTIFY);
     router.cleanQuery("spotify");
     closeSources();
     applyForceHide();
+  }
+
+  if (typeof queryParams.spotify_error === "string" && queryParams.spotify_error.length > 0) {
+    toast.error(`Spotify auth failed: ${queryParams.spotify_error}`);
+    router.cleanQuery("spotify_error");
   }
 });
 
@@ -118,15 +124,19 @@ function closeSources() {
   showMenu.value = true;
 }
 
-function selectSource(source: AudioSource) {
-  if (source === AudioSource.SPOTIFY && shouldBlockSpotifyAuth()) {
-    toast.error(
-      "Spotify mode needs the separate API service. Set VITE_API_BASE_URL to your backend, or set VITE_ALLOW_LOCAL_API=true if you are intentionally using a localhost API."
-    );
-    return;
+async function selectSource(source: AudioSource) {
+  if (source === AudioSource.SPOTIFY) {
+    const spotifyStatus = await checkSpotifyReadiness();
+
+    if (!spotifyStatus.ok) {
+      toast.error(spotifyStatus.message);
+      return;
+    }
   }
 
-  sources.selectSource(source);
+  const selected = await sources.selectSource(source);
+  if (!selected) return;
+
   showSources.value = false;
   showMenu.value = false;
 }
@@ -136,30 +146,47 @@ function openDesigns() {
   ui.showShaderScroll = true;
 }
 
-function selectRadioParadise(data: { station: RadioParadiseStation }) {
+async function selectRadioParadise(data: { station: RadioParadiseStation }) {
   sources.selectRadioParadiseStation(data.station);
-  sources.selectSource(AudioSource.RADIO_PARADISE);
+  const selected = await sources.selectSource(AudioSource.RADIO_PARADISE);
+  if (!selected) return;
+
   showSources.value = false;
   showMenu.value = false;
 }
 
-function shouldBlockSpotifyAuth() {
-  if (import.meta.env.VITE_ALLOW_LOCAL_API === "true") return false;
-  if (typeof window === "undefined") return false;
-
-  const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-
-  if (!isLocalHost) return false;
-
-  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim();
-
-  if (!apiBaseUrl) return true;
+async function checkSpotifyReadiness() {
+  const apiBase = (import.meta.env.VITE_API || "").replace(/\/$/, "");
 
   try {
-    const apiUrl = new URL(apiBaseUrl, window.location.origin);
-    return ["localhost", "127.0.0.1"].includes(apiUrl.hostname);
+    const response = await fetch(`${apiBase}/api/spotify/health`);
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        message:
+          "Spotify mode needs the local API server. Run `npm run api` and make sure `VITE_API_BASE_URL` points to `http://127.0.0.1:3001`."
+      };
+    }
+
+    const data = await response.json();
+
+    if (!data.configured) {
+      const missing = Array.isArray(data.missing) && data.missing.length > 0 ? ` Missing: ${data.missing.join(", ")}.` : "";
+
+      return {
+        ok: false,
+        message: `Spotify mode is not configured yet. Copy \`.env.local.example\` to \`.env.local\` and fill in your Spotify app credentials.${missing}`
+      };
+    }
+
+    return { ok: true, message: "" };
   } catch {
-    return true;
+    return {
+      ok: false,
+      message:
+        "Spotify mode needs the local API server. Run `npm run api` and make sure `VITE_API_BASE_URL` points to `http://127.0.0.1:3001`."
+    };
   }
 }
 </script>

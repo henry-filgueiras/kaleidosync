@@ -16,23 +16,33 @@ Since then, moving beyond the Echo Nest: I've developed a suite of tooling for _
 
 ```bash
 ./setup.sh
+npm run api
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
 API-backed features such as Spotify and Audius use the local `/api` proxy by default.
 Point `VITE_API_BASE_URL` at the separate backend service before testing those flows.
+
+For Spotify locally:
+
+1. Copy [`.env.local.example`](/Users/henry/kaleidosync/.env.local.example) to `.env.local`.
+2. Fill in `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, and keep `SPOTIFY_REDIRECT_URI=http://127.0.0.1:3001/api/spotify/callback`.
+3. In the Spotify Developer Dashboard, register that exact redirect URI.
+4. Use `http://127.0.0.1:5173` instead of `localhost` for the frontend URL.
 
 ### Bazel
 
 ```bash
 bazel run //:setup
+bazel run //:api
 bazel run //:dev
 ```
 
 Additional Bazel targets:
 
+- `bazel run //:api`
 - `bazel run //:build`
 - `bazel run //:start`
 

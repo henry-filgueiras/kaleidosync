@@ -1,12 +1,16 @@
 import compression from "compression";
+import { config } from "dotenv";
 import express from "express";
 import helmet from "helmet";
 import path from "node:path";
 import { Readable } from "node:stream";
 
+config({ quiet: true });
+config({ path: ".env.local", override: true, quiet: true });
+
 const port = Number(process.env.PORT || 2223);
 const directory = "dist";
-const apiUrl = new URL(process.env.VITE_API_BASE_URL || "http://localhost:3001");
+const apiUrl = new URL(process.env.VITE_API_BASE_URL || "http://127.0.0.1:3001");
 const app = express();
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -24,7 +28,7 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 
 app.use("/api", async (req, res) => {
-  const targetUrl = new URL(req.originalUrl.replace(/^\/api/, "") || "/", apiUrl);
+  const targetUrl = new URL(req.originalUrl || "/", apiUrl);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
 
