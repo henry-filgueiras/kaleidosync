@@ -74,6 +74,7 @@ If you prefer the compose wrapper directly:
 ```
 
 The wrapper auto-detects `docker compose` and classic `docker-compose`.
+It also expects a running Docker daemon or runtime such as Docker Desktop, OrbStack, or Colima.
 
 To stop the stack:
 
