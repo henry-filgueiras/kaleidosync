@@ -42,6 +42,72 @@ export const SelectableAudioSources: AudioSource[] = [
 
 const LIVE_INPUT_SOURCES = new Set([AudioSource.MICROPHONE, AudioSource.BROWSER_AUDIO]);
 
+type BrowserAudioSystemInternals = {
+  audioContext?: AudioContext;
+  filterNode?: BiquadFilterNode;
+  analyserNode?: AnalyserNode;
+  microphone?: MediaStream;
+  mediaStreamSource?: MediaStreamAudioSourceNode;
+  currentSource?: MediaElementAudioSourceNode | MediaStreamAudioSourceNode;
+  state?: { source: string | null; isInitialized: boolean };
+  stopMicrophoneWithTimeout?: (timeoutMs?: number) => Promise<void>;
+  disconnectCurrentSource?: () => void;
+  getAudioContext?: () => AudioContext | null;
+};
+
+type BrowserAudioAnalyserPipeline = {
+  audioContext: AudioContext;
+  filterNode: BiquadFilterNode;
+  analyserNode: AnalyserNode;
+};
+
+function getBrowserAudioSystemAdapter() {
+  // Browser Audio currently relies on internal @wearesage/vue audio-system fields
+  // because this repo does not expose a safer public API for analyser-backed
+  // display-capture streams yet.
+  const system = audioSystem as unknown as BrowserAudioSystemInternals;
+
+  return {
+    async stopActiveInput(timeoutMs = 3000) {
+      await system.stopMicrophoneWithTimeout?.(timeoutMs);
+    },
+    disconnectCurrentSource() {
+      system.disconnectCurrentSource?.();
+    },
+    clearMediaStreamSource() {
+      system.mediaStreamSource = undefined;
+    },
+    resetStateAfterCleanup() {
+      if (system.state && system.state.source !== "spotify") {
+        system.state.source = null;
+        system.state.isInitialized = false;
+      }
+    },
+    getAnalyserPipeline(): BrowserAudioAnalyserPipeline | null {
+      const audioContext = system.getAudioContext?.() || system.audioContext;
+      if (!audioContext || !system.filterNode || !system.analyserNode) {
+        return null;
+      }
+
+      return {
+        audioContext,
+        filterNode: system.filterNode,
+        analyserNode: system.analyserNode,
+      };
+    },
+    attachCaptureStream(stream: MediaStream, mediaStreamSource: MediaStreamAudioSourceNode) {
+      system.microphone = stream;
+      system.mediaStreamSource = mediaStreamSource;
+      system.currentSource = mediaStreamSource;
+
+      if (system.state) {
+        system.state.source = "audio";
+        system.state.isInitialized = true;
+      }
+    },
+  };
+}
+
 function getBrowserAudioSupportMessage() {
   return "Browser Audio needs screen-audio capture support. Try Chrome or Edge and share a tab/window with audio enabled. For the macOS Spotify app, use BlackHole or Loopback with Microphone mode.";
 }
@@ -256,21 +322,12 @@ export const useSources = defineStore("sources", () => {
     resetBrowserAudioListeners();
 
     try {
-      const system = audioSystem as unknown as {
-        state?: { source: string | null; isInitialized: boolean };
-        stopMicrophoneWithTimeout?: (timeoutMs?: number) => Promise<void>;
-        disconnectCurrentSource?: () => void;
-        mediaStreamSource?: MediaStreamAudioSourceNode;
-      };
+      const browserAudioSystem = getBrowserAudioSystemAdapter();
 
-      await system.stopMicrophoneWithTimeout?.(3000);
-      system.disconnectCurrentSource?.();
-      system.mediaStreamSource = undefined;
-
-      if (system.state && system.state.source !== "spotify") {
-        system.state.source = null;
-        system.state.isInitialized = false;
-      }
+      await browserAudioSystem.stopActiveInput(3000);
+      browserAudioSystem.disconnectCurrentSource();
+      browserAudioSystem.clearMediaStreamSource();
+      browserAudioSystem.resetStateAfterCleanup();
     } catch (error) {
       console.warn("Could not fully clean up browser audio capture:", error);
     } finally {
@@ -337,20 +394,9 @@ export const useSources = defineStore("sources", () => {
 
       await cleanupBrowserAudioSource();
 
-      const system = audioSystem as unknown as {
-        audioContext?: AudioContext;
-        filterNode?: BiquadFilterNode;
-        analyserNode?: AnalyserNode;
-        microphone?: MediaStream;
-        mediaStreamSource?: MediaStreamAudioSourceNode;
-        currentSource?: MediaElementAudioSourceNode | MediaStreamAudioSourceNode;
-        state?: { source: string | null; isInitialized: boolean };
-        disconnectCurrentSource?: () => void;
-        getAudioContext?: () => AudioContext | null;
-      };
-
-      const audioContext = system.getAudioContext?.() || system.audioContext;
-      if (!audioContext || !system.filterNode || !system.analyserNode) {
+      const browserAudioSystem = getBrowserAudioSystemAdapter();
+      const analyserPipeline = browserAudioSystem.getAnalyserPipeline();
+      if (!analyserPipeline) {
         stream.getTracks().forEach((track) => track.stop());
         return {
           ok: false,
@@ -358,24 +404,19 @@ export const useSources = defineStore("sources", () => {
         };
       }
 
+      const { audioContext, filterNode, analyserNode } = analyserPipeline;
+
       if (audioContext.state === "suspended") {
         await audioContext.resume();
       }
 
-      system.disconnectCurrentSource?.();
+      browserAudioSystem.disconnectCurrentSource();
 
       const mediaStreamSource = audioContext.createMediaStreamSource(stream);
-      mediaStreamSource.connect(system.filterNode);
-      system.filterNode.connect(system.analyserNode);
+      mediaStreamSource.connect(filterNode);
+      filterNode.connect(analyserNode);
 
-      system.microphone = stream;
-      system.mediaStreamSource = mediaStreamSource;
-      system.currentSource = mediaStreamSource;
-
-      if (system.state) {
-        system.state.source = "audio";
-        system.state.isInitialized = true;
-      }
+      browserAudioSystem.attachCaptureStream(stream, mediaStreamSource);
 
       browserAudioStream.value = stream;
       attachBrowserAudioListeners(stream);
