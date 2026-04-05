@@ -3,14 +3,16 @@
     <nav>
       <MenuHeader title="settings" @close="router.push('/visualizer')" />
       <Column align="end" cascade>
-        <Toggle label="Disable Flashing" v-model="userState.disableFlashing" />
-        <Toggle label="Neon Mode" v-model="userState.neonMode" />
-        <Toggle label="Show Menu Labels" v-model="userState.showMenuLabels" />
-        <Toggle label="Always Show Track" v-model="userState.alwaysShowTrack" />
-        <Toggle label="Shuffle Designs" v-model="userState.shuffleDesigns" />
-        <Toggle label="Infinity Play" v-model="userState.infinityPlay" />
-        <Toggle label="Prefer Lossless Audio" v-model="userState.preferLossless" />
-        <RangeInput label="Speed" v-model="userState.visualizerSpeed" :min="0.25" :max="1.2" :step="0.001" />
+        <Toggle label="Disable Flashing" v-model="settings.disableFlashing" />
+        <Toggle label="Neon Mode" v-model="settings.neonMode" />
+        <Toggle label="Show Menu Labels" v-model="settings.showMenuLabels" />
+        <Toggle label="Always Show Track" v-model="settings.alwaysShowTrack" />
+        <Toggle label="Auto Cycle Presets" v-model="settings.autoCyclePresets" />
+        <Toggle label="Audio-Reactive Cycling" v-model="settings.audioReactiveCycling" />
+        <Toggle label="Infinity Play" v-model="settings.infinityPlay" />
+        <Toggle label="Prefer Lossless Audio" v-model="settings.preferLossless" />
+        <RangeInput label="Cycle Rate" v-model="settings.cycleRate" :min="0.35" :max="1.4" :step="0.01" />
+        <p class="hint">Auto cycling advances on a timer and can also respond to stronger audio peaks after a cooldown.</p>
       </Column>
     </nav>
   </View>
@@ -19,24 +21,24 @@
 <script setup lang="ts">
 import { View, Column, Toggle, RangeInput, useRouter } from "@wearesage/vue";
 import { MenuHeader } from "../components";
+import { useVisualizerSettings } from "../stores/visualizer-settings";
 
 const router = useRouter();
-
-const userState = {
-  disableFlashing: false,
-  neonMode: false,
-  showMenuLabels: false,
-  shuffleDesigns: true,
-  alwaysShowTrack: false,
-  infinityPlay: false,
-  preferLossless: false,
-  visualizerSpeed: 1
-};
+const settings = useVisualizerSettings();
 </script>
 
 <style lang="scss" scoped>
 nav {
   @include fixed-menu;
+}
+
+.hint {
+  max-width: 20rem;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-align: right;
+  opacity: 0.72;
 }
 </style>
 

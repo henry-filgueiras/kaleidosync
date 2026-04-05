@@ -21,13 +21,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useMagicKeys } from "@vueuse/core";
 import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
 import { Menu, AudioSources, AudioDebugMeter } from "../components";
 import { useRouter } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
 import { useSources } from "../stores/sources";
+import { useVisualizerSettings } from "../stores/visualizer-settings";
 
 const router = useRouter();
 const viewport = useViewport();
@@ -35,6 +36,7 @@ const sources = useSources();
 const sketches = useSketches();
 const ui = useUI();
 const toast = useToast();
+const settings = useVisualizerSettings();
 const showSources = ref(!sources.source);
 const showMenu = ref(!showSources.value);
 const forceHide = ref(false);
@@ -42,6 +44,20 @@ const { ArrowUp, ArrowDown, ArrowLeft, ArrowRight } = useMagicKeys();
 const showMenuTimeout = ref<any>(null);
 const forceHideTimeout = ref<any>(null);
 const MOUSE_TIMEOUT = 2000;
+const volumeHistory = ref<number[]>([]);
+const lastPresetCycleAt = ref(Date.now());
+const lastAudioTriggerAt = ref(0);
+let autoCycleInterval: number | null = null;
+
+const cycleTiming = computed(() => {
+  const rate = Math.max(0.35, Math.min(1.4, Number(settings.cycleRate) || 0.85));
+
+  return {
+    minGapMs: Math.max(7_000, Math.min(40_000, Math.round(12_000 / rate))),
+    maxGapMs: Math.max(14_000, Math.min(90_000, Math.round(26_000 / rate))),
+    peakFloor: Math.max(0.16, 0.34 - rate * 0.05),
+  };
+});
 
 onMounted(async () => {
   const queryParams = parseQueryString();
@@ -56,6 +72,14 @@ onMounted(async () => {
   if (typeof queryParams.spotify_error === "string" && queryParams.spotify_error.length > 0) {
     toast.error(`Spotify auth failed: ${queryParams.spotify_error}`);
     router.cleanQuery("spotify_error");
+  }
+
+  autoCycleInterval = window.setInterval(evaluatePresetCycling, 900);
+});
+
+onBeforeUnmount(() => {
+  if (autoCycleInterval !== null) {
+    window.clearInterval(autoCycleInterval);
   }
 });
 
@@ -105,6 +129,24 @@ watch(ArrowRight, val => {
 watch(ArrowDown, val => {
   if (val) sketches.selectNextSketch("keyboard");
 });
+
+watch(
+  () => sketches.activeSketchId,
+  () => {
+    lastPresetCycleAt.value = Date.now();
+    volumeHistory.value = [];
+  },
+  { immediate: true }
+);
+
+watch(
+  () => sources.source,
+  () => {
+    volumeHistory.value = [];
+    lastAudioTriggerAt.value = 0;
+    lastPresetCycleAt.value = Date.now();
+  }
+);
 
 function applyForceHide() {
   clearTimeout(showMenuTimeout.value);
@@ -190,6 +232,53 @@ async function checkSpotifyReadiness() {
         "Spotify mode needs the local API server. Run `npm run api` and make sure `VITE_API_BASE_URL` points to `http://127.0.0.1:3001`."
     };
   }
+}
+
+function evaluatePresetCycling() {
+  if (!settings.autoCyclePresets) return;
+  if (!sketches.sketch || sketches.iterations.length < 2) return;
+  if (!sources.source || sources.source === AudioSource.NONE) return;
+  if (showSources.value || ui.showShaderScroll) return;
+  if (showMenu.value && !forceHide.value) return;
+  if (sketches.tweening) return;
+
+  const now = Date.now();
+  const volume = Math.max(0, Number(sources.volume) || 0);
+  const previousVolume = volumeHistory.value.at(-1) ?? volume;
+
+  volumeHistory.value.push(volume);
+  if (volumeHistory.value.length > 18) {
+    volumeHistory.value.splice(0, volumeHistory.value.length - 18);
+  }
+
+  const averageVolume =
+    volumeHistory.value.length > 0
+      ? volumeHistory.value.reduce((sum, value) => sum + value, 0) / volumeHistory.value.length
+      : volume;
+
+  const sinceLastCycle = now - lastPresetCycleAt.value;
+  const sinceLastAudioTrigger = now - lastAudioTriggerAt.value;
+  const { minGapMs, maxGapMs, peakFloor } = cycleTiming.value;
+
+  const audioPeakReady =
+    settings.audioReactiveCycling &&
+    sinceLastCycle >= minGapMs &&
+    sinceLastAudioTrigger >= Math.max(3_500, Math.round(minGapMs * 0.45)) &&
+    volume > peakFloor &&
+    volume > averageVolume * 1.45 &&
+    volume - previousVolume > 0.025;
+
+  const timerReady = sinceLastCycle >= maxGapMs;
+
+  if (!audioPeakReady && !timerReady) return;
+
+  lastPresetCycleAt.value = now;
+  if (audioPeakReady) {
+    lastAudioTriggerAt.value = now;
+  }
+
+  sketches.selectNextSketch("internal");
+  applyForceHide();
 }
 </script>
 
