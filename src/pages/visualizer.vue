@@ -15,6 +15,8 @@
     <Transition name="fade-down">
       <TrackDisplay v-if="showMenu && !forceHide && sources.source" />
     </Transition>
+
+    <AudioDebugMeter />
   </View>
 </template>
 
@@ -22,7 +24,7 @@
 import { ref, onMounted, watch } from "vue";
 import { useMagicKeys } from "@vueuse/core";
 import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
-import { Menu, AudioSources } from "../components";
+import { Menu, AudioSources, AudioDebugMeter } from "../components";
 import { useRouter } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
 import { useSources } from "../stores/sources";
