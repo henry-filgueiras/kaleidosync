@@ -1,0 +1,5 @@
+module(
+    name = "kaleidosync",
+)
+
+bazel_dep(name = "rules_shell", version = "0.7.1")

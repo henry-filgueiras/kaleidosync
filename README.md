@@ -10,6 +10,29 @@
 
 Since then, moving beyond the Echo Nest: I've developed a suite of tooling for _realtime_ audio analysis, right in the browser: on **any** device.
 
+## Local development
+
+### npm
+
+```bash
+./setup.sh
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173).
+
+### Bazel
+
+```bash
+bazel run //:setup
+bazel run //:dev
+```
+
+Additional Bazel targets:
+
+- `bazel run //:build`
+- `bazel run //:start`
+
 ## Changelog
 
 #### Version 10.0

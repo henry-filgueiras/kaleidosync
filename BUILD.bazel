@@ -1,0 +1,25 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+sh_binary(
+    name = "setup",
+    srcs = ["tools/bazel/setup.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "dev",
+    srcs = ["tools/bazel/dev.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "build",
+    srcs = ["tools/bazel/build.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "start",
+    srcs = ["tools/bazel/start.sh"],
+    visibility = ["//visibility:public"],
+)
