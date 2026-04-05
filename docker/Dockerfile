@@ -7,8 +7,8 @@ RUN apt-get update \
   && ln -sf /usr/bin/python3 /usr/local/bin/python \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json ./
-RUN npm install --no-package-lock
+COPY package.json package-lock.json ./
+RUN npm ci
 
 FROM deps AS source
 

@@ -36,7 +36,7 @@ if [ -f package-lock.json ]; then
   npm ci
 else
   echo "Installing dependencies..."
-  npm install --no-package-lock
+  npm install
 fi
 
 cat <<'EOF'
