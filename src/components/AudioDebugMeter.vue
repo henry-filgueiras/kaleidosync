@@ -12,8 +12,8 @@
       </div>
 
       <div class="numbers">
-        <span>Live {{ levelPercent }}%</span>
-        <span>Peak {{ peakPercent }}%</span>
+        <span>Live {{ liveLabel }}</span>
+        <span>Peak {{ peakLabel }}</span>
       </div>
 
       <p class="hint">This reads the raw input signal. Pause Spotify: it should fall near zero unless ambient audio is getting through.</p>
@@ -28,20 +28,38 @@ import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { useSources } from "../stores/sources";
 
 const sources = useSources();
+const noiseFloorDb = -72;
 const liveLevel = ref(0);
-const peak = ref(0);
+const peakDb = ref(noiseFloorDb);
 let analyserBuffer: Uint8Array | null = null;
 
 const visible = computed(() => {
   return sources.source === AudioSource.MICROPHONE || sources.source === AudioSource.BROWSER_AUDIO;
 });
 
+const levelDb = computed(() => {
+  if (liveLevel.value <= 0.00001) return noiseFloorDb;
+  return Math.max(noiseFloorDb, 20 * Math.log10(liveLevel.value));
+});
+
+function dbToPercent(value: number) {
+  return Math.max(0, Math.min(100, Math.round(((value - noiseFloorDb) / -noiseFloorDb) * 100)));
+}
+
 const levelPercent = computed(() => {
-  return Math.max(0, Math.min(100, Math.round(liveLevel.value * 100)));
+  return dbToPercent(levelDb.value);
 });
 
 const peakPercent = computed(() => {
-  return Math.max(levelPercent.value, Math.min(100, Math.round(peak.value)));
+  return Math.max(levelPercent.value, dbToPercent(peakDb.value));
+});
+
+const liveLabel = computed(() => {
+  return levelDb.value <= noiseFloorDb + 1 ? "Silent" : `${Math.round(levelDb.value)} dB`;
+});
+
+const peakLabel = computed(() => {
+  return peakDb.value <= noiseFloorDb + 1 ? "Silent" : `${Math.round(peakDb.value)} dB`;
 });
 
 const sourceLabel = computed(() => {
@@ -51,10 +69,10 @@ const sourceLabel = computed(() => {
 });
 
 watch(
-  () => levelPercent.value,
+  () => levelDb.value,
   (value) => {
-    if (value > peak.value) {
-      peak.value = value;
+    if (value > peakDb.value) {
+      peakDb.value = value;
     }
   },
   { immediate: true }
@@ -64,7 +82,7 @@ watch(
   () => visible.value,
   (isVisible) => {
     if (!isVisible) {
-      peak.value = 0;
+      peakDb.value = noiseFloorDb;
       liveLevel.value = 0;
     }
   }
@@ -90,9 +108,7 @@ function sampleAnalyserLevel() {
 
   const rms = Math.sqrt(sumSquares / analyserBuffer.length);
 
-  // Give the meter enough gain to show real program material,
-  // while letting silence settle back near zero.
-  return Math.max(0, Math.min(1, rms * 6));
+  return Math.max(0, rms);
 }
 
 const sampler = window.setInterval(() => {
@@ -105,9 +121,9 @@ const sampler = window.setInterval(() => {
 
 const peakDecay = window.setInterval(() => {
   if (!visible.value) return;
-  if (peak.value <= levelPercent.value) return;
+  if (peakDb.value <= levelDb.value) return;
 
-  peak.value = Math.max(levelPercent.value, peak.value - 2);
+  peakDb.value = Math.max(levelDb.value, peakDb.value - 1.5);
 }, 120);
 
 onBeforeUnmount(() => {
