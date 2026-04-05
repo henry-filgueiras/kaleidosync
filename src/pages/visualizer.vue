@@ -21,7 +21,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import { useMagicKeys } from "@vueuse/core";
-import { View, useSources, useViewport, useUI, useSketches, parseQueryString, TrackDisplay } from "@wearesage/vue";
+import { View, useSources, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
 import { Menu, AudioSources } from "../components";
 import { useRouter } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
@@ -31,6 +31,7 @@ const viewport = useViewport();
 const sources = useSources();
 const sketches = useSketches();
 const ui = useUI();
+const toast = useToast();
 const showSources = ref(!sources.source);
 const showMenu = ref(!showSources.value);
 const forceHide = ref(false);
@@ -118,6 +119,13 @@ function closeSources() {
 }
 
 function selectSource(source: AudioSource) {
+  if (source === AudioSource.SPOTIFY && shouldBlockSpotifyAuth()) {
+    toast.error(
+      "Spotify mode needs the separate API service. Set VITE_API_BASE_URL to your backend, or set VITE_ALLOW_LOCAL_API=true if you are intentionally using a localhost API."
+    );
+    return;
+  }
+
   sources.selectSource(source);
   showSources.value = false;
   showMenu.value = false;
@@ -133,6 +141,26 @@ function selectRadioParadise(data: { station: RadioParadiseStation }) {
   sources.selectSource(AudioSource.RADIO_PARADISE);
   showSources.value = false;
   showMenu.value = false;
+}
+
+function shouldBlockSpotifyAuth() {
+  if (import.meta.env.VITE_ALLOW_LOCAL_API === "true") return false;
+  if (typeof window === "undefined") return false;
+
+  const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+
+  if (!isLocalHost) return false;
+
+  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim();
+
+  if (!apiBaseUrl) return true;
+
+  try {
+    const apiUrl = new URL(apiBaseUrl, window.location.origin);
+    return ["localhost", "127.0.0.1"].includes(apiUrl.hostname);
+  } catch {
+    return true;
+  }
 }
 </script>
 

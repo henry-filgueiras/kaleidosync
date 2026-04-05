@@ -21,6 +21,9 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
+API-backed features such as Spotify and Audius use the local `/api` proxy by default.
+Point `VITE_API_BASE_URL` at the separate backend service before testing those flows.
+
 ### Bazel
 
 ```bash
@@ -32,6 +35,8 @@ Additional Bazel targets:
 
 - `bazel run //:build`
 - `bazel run //:start`
+
+`bazel run //:start` serves the built frontend on port `2223` and proxies `/api/*` to `VITE_API_BASE_URL`.
 
 ## Changelog
 

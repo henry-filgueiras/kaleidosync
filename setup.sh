@@ -56,5 +56,13 @@ To test the production build locally:
 Then open:
   http://localhost:2223
 
-If you created .env from .env.example, update any placeholder values before using API-backed features.
+Spotify, Audius, and other API-backed features expect a separate API server.
+By default this repo proxies /api requests to:
+  http://localhost:3001
+
+If your API lives elsewhere, update:
+  VITE_API_BASE_URL
+
+If you want the browser to call an absolute API origin directly instead of the local /api proxy, also set:
+  VITE_API
 EOF

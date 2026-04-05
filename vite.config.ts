@@ -7,15 +7,28 @@ config();
 // Pure magic - one function call!
 export default defineConfig(async () => {
   const baseConfig = await createSageConfig({
-    router: true
+    router: true,
+    apiProxy: {
+      target: process.env.VITE_API_BASE_URL || "http://localhost:3001"
+    }
   });
 
-  // Fix dayjs ES module issue from AppKit - merge configs properly
+  const include = [
+    ...(baseConfig.optimizeDeps?.include || []).filter(dep => dep !== "phone"),
+    "dayjs",
+    "dayjs/locale/en",
+    "dayjs/esm/locale/en"
+  ];
+
   return {
     ...baseConfig,
+    define: {
+      ...(baseConfig.define || {}),
+      "import.meta.env.VITE_API": JSON.stringify(process.env.VITE_API ?? "")
+    },
     optimizeDeps: {
       ...baseConfig.optimizeDeps,
-      include: [...(baseConfig.optimizeDeps?.include || []), "dayjs", "dayjs/locale/en", "dayjs/esm/locale/en"]
+      include: [...new Set(include)]
     }
   };
 });
