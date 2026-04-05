@@ -48,6 +48,51 @@ const { ArrowUp, ArrowDown, ArrowLeft, ArrowRight } = useMagicKeys();
 const showMenuTimeout = ref<any>(null);
 const forceHideTimeout = ref<any>(null);
 const MOUSE_TIMEOUT = 2000;
+const PRESET_CYCLE_CONFIG = {
+  evaluationIntervalMs: 900,
+  signalHistorySize: 18,
+  rate: {
+    min: 0.35,
+    max: 1.4,
+    default: 0.85,
+  },
+  minGapMs: {
+    base: 12_000,
+    min: 7_000,
+    max: 40_000,
+  },
+  maxGapMs: {
+    base: 26_000,
+    min: 14_000,
+    max: 90_000,
+  },
+  audioTriggerCooldownMs: {
+    min: 3_500,
+    fractionOfMinGap: 0.45,
+  },
+  normalizedSignal: {
+    peakFloorMin: 0.16,
+    peakFloorBase: 0.34,
+    peakFloorRateScale: 0.05,
+    averageMultiplier: 1.45,
+    riseThreshold: 0.025,
+  },
+  rawLiveSignal: {
+    peakFloorDbMin: -44,
+    peakFloorDbMax: -34,
+    peakFloorBase: -40,
+    peakFloorRatePivot: 0.85,
+    peakFloorRateScale: 7,
+    surgeDbMin: 2.2,
+    surgeDbMax: 5,
+    surgeDbBase: 4.2,
+    surgeDbRateScale: 1.4,
+    riseDbMin: 1.1,
+    riseDbMax: 3,
+    riseDbBase: 2.2,
+    riseDbRateScale: 0.5,
+  },
+} as const;
 const signalHistory = ref<number[]>([]);
 const lastPresetCycleAt = ref(Date.now());
 const lastAudioTriggerAt = ref(0);
@@ -56,15 +101,48 @@ let autoCycleInterval: number | null = null;
 let cycleAnalyserBuffer: Uint8Array | null = null;
 
 const cycleTiming = computed(() => {
-  const rate = Math.max(0.35, Math.min(1.4, Number(settings.cycleRate) || 0.85));
+  const rate = Math.max(
+    PRESET_CYCLE_CONFIG.rate.min,
+    Math.min(PRESET_CYCLE_CONFIG.rate.max, Number(settings.cycleRate) || PRESET_CYCLE_CONFIG.rate.default)
+  );
 
+  // Higher cycleRate shortens both the audio-trigger cooldown window and the timer fallback gap,
+  // so presets can advance sooner without changing the overall clamp bounds.
   return {
-    minGapMs: Math.max(7_000, Math.min(40_000, Math.round(12_000 / rate))),
-    maxGapMs: Math.max(14_000, Math.min(90_000, Math.round(26_000 / rate))),
-    peakFloor: Math.max(0.16, 0.34 - rate * 0.05),
-    peakFloorDb: Math.max(-44, Math.min(-34, -40 + (0.85 - rate) * 7)),
-    surgeDb: Math.max(2.2, Math.min(5, 4.2 - rate * 1.4)),
-    riseDb: Math.max(1.1, Math.min(3, 2.2 - rate * 0.5)),
+    minGapMs: Math.max(
+      PRESET_CYCLE_CONFIG.minGapMs.min,
+      Math.min(PRESET_CYCLE_CONFIG.minGapMs.max, Math.round(PRESET_CYCLE_CONFIG.minGapMs.base / rate))
+    ),
+    maxGapMs: Math.max(
+      PRESET_CYCLE_CONFIG.maxGapMs.min,
+      Math.min(PRESET_CYCLE_CONFIG.maxGapMs.max, Math.round(PRESET_CYCLE_CONFIG.maxGapMs.base / rate))
+    ),
+    peakFloor: Math.max(
+      PRESET_CYCLE_CONFIG.normalizedSignal.peakFloorMin,
+      PRESET_CYCLE_CONFIG.normalizedSignal.peakFloorBase - rate * PRESET_CYCLE_CONFIG.normalizedSignal.peakFloorRateScale
+    ),
+    peakFloorDb: Math.max(
+      PRESET_CYCLE_CONFIG.rawLiveSignal.peakFloorDbMin,
+      Math.min(
+        PRESET_CYCLE_CONFIG.rawLiveSignal.peakFloorDbMax,
+        PRESET_CYCLE_CONFIG.rawLiveSignal.peakFloorBase +
+          (PRESET_CYCLE_CONFIG.rawLiveSignal.peakFloorRatePivot - rate) * PRESET_CYCLE_CONFIG.rawLiveSignal.peakFloorRateScale
+      )
+    ),
+    surgeDb: Math.max(
+      PRESET_CYCLE_CONFIG.rawLiveSignal.surgeDbMin,
+      Math.min(
+        PRESET_CYCLE_CONFIG.rawLiveSignal.surgeDbMax,
+        PRESET_CYCLE_CONFIG.rawLiveSignal.surgeDbBase - rate * PRESET_CYCLE_CONFIG.rawLiveSignal.surgeDbRateScale
+      )
+    ),
+    riseDb: Math.max(
+      PRESET_CYCLE_CONFIG.rawLiveSignal.riseDbMin,
+      Math.min(
+        PRESET_CYCLE_CONFIG.rawLiveSignal.riseDbMax,
+        PRESET_CYCLE_CONFIG.rawLiveSignal.riseDbBase - rate * PRESET_CYCLE_CONFIG.rawLiveSignal.riseDbRateScale
+      )
+    ),
   };
 });
 
@@ -83,7 +161,7 @@ onMounted(async () => {
     router.cleanQuery("spotify_error");
   }
 
-  autoCycleInterval = window.setInterval(evaluatePresetCycling, 900);
+  autoCycleInterval = window.setInterval(evaluatePresetCycling, PRESET_CYCLE_CONFIG.evaluationIntervalMs);
 });
 
 onBeforeUnmount(() => {
@@ -262,8 +340,8 @@ function evaluatePresetCycling() {
   const previousSignal = signalHistory.value.at(-1) ?? signal;
 
   signalHistory.value.push(signal);
-  if (signalHistory.value.length > 18) {
-    signalHistory.value.splice(0, signalHistory.value.length - 18);
+  if (signalHistory.value.length > PRESET_CYCLE_CONFIG.signalHistorySize) {
+    signalHistory.value.splice(0, signalHistory.value.length - PRESET_CYCLE_CONFIG.signalHistorySize);
   }
 
   const averageSignal =
@@ -274,10 +352,21 @@ function evaluatePresetCycling() {
   const audioPeakReady =
     settings.audioReactiveCycling &&
     sinceLastCycle >= minGapMs &&
-    sinceLastAudioTrigger >= Math.max(3_500, Math.round(minGapMs * 0.45)) &&
+    sinceLastAudioTrigger >=
+      Math.max(
+        PRESET_CYCLE_CONFIG.audioTriggerCooldownMs.min,
+        Math.round(minGapMs * PRESET_CYCLE_CONFIG.audioTriggerCooldownMs.fractionOfMinGap)
+      ) &&
+    // Raw live-input dB readings are source-dependent and unnormalized, so they use additive
+    // thresholds. The shared store volume is already normalized to 0..1, so it uses relative
+    // thresholds against its recent baseline instead.
+    // Peak thresholds reject floor noise, surge thresholds look for energy breaking above the
+    // recent average, and rise thresholds catch sudden onsets instead of sustained loud passages.
     (useRawLiveSignal
       ? signal > peakFloorDb && signal > averageSignal + surgeDb && signal - previousSignal > riseDb
-      : signal > peakFloor && signal > averageSignal * 1.45 && signal - previousSignal > 0.025);
+      : signal > peakFloor &&
+          signal > averageSignal * PRESET_CYCLE_CONFIG.normalizedSignal.averageMultiplier &&
+          signal - previousSignal > PRESET_CYCLE_CONFIG.normalizedSignal.riseThreshold);
 
   const timerReady = sinceLastCycle >= maxGapMs;
 
