@@ -1,0 +1,9 @@
+.DS_Store
+.env
+.env.local
+.git
+.gitignore
+bazel-*
+dist
+node_modules
+npm-debug.log*

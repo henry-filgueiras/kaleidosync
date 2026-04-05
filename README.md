@@ -53,6 +53,37 @@ bazel run //:api
 bazel run //:dev
 ```
 
+### Docker
+
+Bring up the full Docker-managed local stack in one command:
+
+```bash
+bazel run //:docker_up
+```
+
+That starts three services:
+
+- `api` on `http://127.0.0.1:3001`
+- `dev` on `http://127.0.0.1:5173`
+- `start` on `http://127.0.0.1:2223`
+
+If you prefer the compose wrapper directly:
+
+```bash
+./tools/docker/compose.sh up --build --detach --remove-orphans
+```
+
+The wrapper auto-detects `docker compose` and classic `docker-compose`.
+
+To stop the stack:
+
+```bash
+bazel run //:docker_down
+```
+
+The compose wrapper reads `.env` and `.env.local` if present, so local Spotify secrets still stay in `.env.local`.
+`dev` uses the internal Docker network to proxy `/api` to the `api` service, while `start` serves the production build and proxies `/api` the same way.
+
 Native Spotify app path on macOS:
 
 ```bash
@@ -68,6 +99,8 @@ Additional Bazel targets:
 - `bazel run //:setup_blackhole`
 - `bazel run //:dev_blackhole`
 - `bazel run //:start_blackhole`
+- `bazel run //:docker_up`
+- `bazel run //:docker_down`
 
 `bazel run //:start` serves the built frontend on port `2223` and proxies `/api/*` to `VITE_API_BASE_URL`.
 

@@ -47,3 +47,15 @@ sh_binary(
     srcs = ["tools/bazel/start-blackhole.sh"],
     visibility = ["//visibility:public"],
 )
+
+sh_binary(
+    name = "docker_up",
+    srcs = ["tools/bazel/docker-up.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "docker_down",
+    srcs = ["tools/bazel/docker-down.sh"],
+    visibility = ["//visibility:public"],
+)

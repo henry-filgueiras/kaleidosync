@@ -1,0 +1,76 @@
+version: "2.4"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: api
+    environment:
+      API_PORT: "3001"
+      PORT: "3001"
+      SPOTIFY_ALLOWED_RETURN_HOSTS: "${SPOTIFY_ALLOWED_RETURN_HOSTS:-127.0.0.1,localhost}"
+      SPOTIFY_CLIENT_ID: "${SPOTIFY_CLIENT_ID:-}"
+      SPOTIFY_CLIENT_SECRET: "${SPOTIFY_CLIENT_SECRET:-}"
+      SPOTIFY_DEFAULT_RETURN_URL: "${SPOTIFY_DEFAULT_RETURN_URL:-http://127.0.0.1:5173/visualizer}"
+      SPOTIFY_REDIRECT_URI: "${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:3001/api/spotify/callback}"
+      SPOTIFY_SCOPES: "${SPOTIFY_SCOPES:-user-read-currently-playing user-read-playback-state}"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/api/spotify/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      VITE_API: ""
+      VITE_API_BASE_URL: "http://api:3001"
+      VITE_DEFAULT_AUTHENTICATED_VIEW: "${VITE_DEFAULT_AUTHENTICATED_VIEW:-/visualizer}"
+      VITE_OPENROUTER_API_KEY: "${VITE_OPENROUTER_API_KEY:-your_api_key_here}"
+      VITE_REOWN_PROJECT_ID: "${VITE_REOWN_PROJECT_ID:-your_reown_project_id_here}"
+      VITE_S3_BUCKET: "${VITE_S3_BUCKET:-https://s3.us-west-1.amazonaws.com/bucket}"
+      VITE_SOCKET_URL: "${VITE_SOCKET_URL:-ws://127.0.0.1:3001}"
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+
+  start:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: start
+      args:
+        VITE_API: ""
+        VITE_API_BASE_URL: "${DOCKER_BUILD_VITE_API_BASE_URL:-http://127.0.0.1:3001}"
+        VITE_DEFAULT_AUTHENTICATED_VIEW: "${VITE_DEFAULT_AUTHENTICATED_VIEW:-/visualizer}"
+        VITE_OPENROUTER_API_KEY: "${VITE_OPENROUTER_API_KEY:-your_api_key_here}"
+        VITE_REOWN_PROJECT_ID: "${VITE_REOWN_PROJECT_ID:-your_reown_project_id_here}"
+        VITE_S3_BUCKET: "${VITE_S3_BUCKET:-https://s3.us-west-1.amazonaws.com/bucket}"
+        VITE_SOCKET_URL: "${VITE_SOCKET_URL:-ws://127.0.0.1:3001}"
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      PORT: "2223"
+      VITE_API_BASE_URL: "http://api:3001"
+    ports:
+      - "2223:2223"
+    restart: unless-stopped
