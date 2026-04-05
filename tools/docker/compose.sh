@@ -108,7 +108,7 @@ load_env_file ".env"
 load_env_file ".env.local"
 
 if [ "${compose_cmd[0]}" = "docker" ] && [ "${compose_cmd[1]}" = "compose" ]; then
-  TEMP_COMPOSE_FILE="$(mktemp)"
+  TEMP_COMPOSE_FILE="$(mktemp "$ROOT_DIR/.docker-compose.XXXXXX.yml")"
   trap cleanup EXIT
   awk 'NR == 1 && $0 ~ /^version:/ { next } NR == 2 && $0 ~ /^[[:space:]]*$/ { next } { print }' docker-compose.yml > "$TEMP_COMPOSE_FILE"
   compose_file="$TEMP_COMPOSE_FILE"
