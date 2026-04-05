@@ -25,10 +25,11 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { AudioSource } from "@wearesage/shared";
 import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
+import { RAW_AUDIO_NOISE_FLOOR_DB, rawDecibelsToPercent, rawLevelToDecibels, sampleRawAnalyserLevel } from "../audio-level";
 import { useSources } from "../stores/sources";
 
 const sources = useSources();
-const noiseFloorDb = -72;
+const noiseFloorDb = RAW_AUDIO_NOISE_FLOOR_DB;
 const liveLevel = ref(0);
 const peakDb = ref(noiseFloorDb);
 let analyserBuffer: Uint8Array | null = null;
@@ -38,20 +39,15 @@ const visible = computed(() => {
 });
 
 const levelDb = computed(() => {
-  if (liveLevel.value <= 0.00001) return noiseFloorDb;
-  return Math.max(noiseFloorDb, 20 * Math.log10(liveLevel.value));
+  return rawLevelToDecibels(liveLevel.value, noiseFloorDb);
 });
 
-function dbToPercent(value: number) {
-  return Math.max(0, Math.min(100, Math.round(((value - noiseFloorDb) / -noiseFloorDb) * 100)));
-}
-
 const levelPercent = computed(() => {
-  return dbToPercent(levelDb.value);
+  return rawDecibelsToPercent(levelDb.value, noiseFloorDb);
 });
 
 const peakPercent = computed(() => {
-  return Math.max(levelPercent.value, dbToPercent(peakDb.value));
+  return Math.max(levelPercent.value, rawDecibelsToPercent(peakDb.value, noiseFloorDb));
 });
 
 const liveLabel = computed(() => {
@@ -91,24 +87,9 @@ watch(
 function sampleAnalyserLevel() {
   if (!visible.value) return 0;
 
-  const analyser = audioSystem.getAnalyserNode();
-  if (!analyser) return 0;
-
-  if (!analyserBuffer || analyserBuffer.length !== analyser.fftSize) {
-    analyserBuffer = new Uint8Array(analyser.fftSize);
-  }
-
-  analyser.getByteTimeDomainData(analyserBuffer);
-
-  let sumSquares = 0;
-  for (let i = 0; i < analyserBuffer.length; i++) {
-    const centered = (analyserBuffer[i] - 128) / 128;
-    sumSquares += centered * centered;
-  }
-
-  const rms = Math.sqrt(sumSquares / analyserBuffer.length);
-
-  return Math.max(0, rms);
+  const result = sampleRawAnalyserLevel(audioSystem.getAnalyserNode(), analyserBuffer);
+  analyserBuffer = result.buffer;
+  return result.level;
 }
 
 const sampler = window.setInterval(() => {

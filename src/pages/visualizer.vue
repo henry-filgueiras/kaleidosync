@@ -23,7 +23,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useMagicKeys } from "@vueuse/core";
+import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
+import { RAW_AUDIO_NOISE_FLOOR_DB, rawLevelToDecibels, sampleRawAnalyserLevel } from "../audio-level";
 import { Menu, AudioSources, AudioDebugMeter } from "../components";
 import { useRouter } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
@@ -44,10 +46,12 @@ const { ArrowUp, ArrowDown, ArrowLeft, ArrowRight } = useMagicKeys();
 const showMenuTimeout = ref<any>(null);
 const forceHideTimeout = ref<any>(null);
 const MOUSE_TIMEOUT = 2000;
-const volumeHistory = ref<number[]>([]);
+const signalHistory = ref<number[]>([]);
 const lastPresetCycleAt = ref(Date.now());
 const lastAudioTriggerAt = ref(0);
+const LIVE_INPUT_CYCLE_SOURCES = new Set([AudioSource.MICROPHONE, AudioSource.BROWSER_AUDIO]);
 let autoCycleInterval: number | null = null;
+let cycleAnalyserBuffer: Uint8Array | null = null;
 
 const cycleTiming = computed(() => {
   const rate = Math.max(0.35, Math.min(1.4, Number(settings.cycleRate) || 0.85));
@@ -56,6 +60,9 @@ const cycleTiming = computed(() => {
     minGapMs: Math.max(7_000, Math.min(40_000, Math.round(12_000 / rate))),
     maxGapMs: Math.max(14_000, Math.min(90_000, Math.round(26_000 / rate))),
     peakFloor: Math.max(0.16, 0.34 - rate * 0.05),
+    peakFloorDb: Math.max(-44, Math.min(-34, -40 + (0.85 - rate) * 7)),
+    surgeDb: Math.max(2.2, Math.min(5, 4.2 - rate * 1.4)),
+    riseDb: Math.max(1.1, Math.min(3, 2.2 - rate * 0.5)),
   };
 });
 
@@ -134,7 +141,7 @@ watch(
   () => sketches.activeSketchId,
   () => {
     lastPresetCycleAt.value = Date.now();
-    volumeHistory.value = [];
+    signalHistory.value = [];
   },
   { immediate: true }
 );
@@ -142,9 +149,10 @@ watch(
 watch(
   () => sources.source,
   () => {
-    volumeHistory.value = [];
+    signalHistory.value = [];
     lastAudioTriggerAt.value = 0;
     lastPresetCycleAt.value = Date.now();
+    cycleAnalyserBuffer = null;
   }
 );
 
@@ -243,30 +251,31 @@ function evaluatePresetCycling() {
   if (sketches.tweening) return;
 
   const now = Date.now();
-  const volume = Math.max(0, Number(sources.volume) || 0);
-  const previousVolume = volumeHistory.value.at(-1) ?? volume;
-
-  volumeHistory.value.push(volume);
-  if (volumeHistory.value.length > 18) {
-    volumeHistory.value.splice(0, volumeHistory.value.length - 18);
-  }
-
-  const averageVolume =
-    volumeHistory.value.length > 0
-      ? volumeHistory.value.reduce((sum, value) => sum + value, 0) / volumeHistory.value.length
-      : volume;
-
   const sinceLastCycle = now - lastPresetCycleAt.value;
   const sinceLastAudioTrigger = now - lastAudioTriggerAt.value;
-  const { minGapMs, maxGapMs, peakFloor } = cycleTiming.value;
+  const { minGapMs, maxGapMs, peakFloor, peakFloorDb, surgeDb, riseDb } = cycleTiming.value;
+
+  const useRawLiveSignal = LIVE_INPUT_CYCLE_SOURCES.has(sources.source);
+  const signal = useRawLiveSignal ? sampleLiveInputSignalDb() : Math.max(0, Number(sources.volume) || 0);
+  const previousSignal = signalHistory.value.at(-1) ?? signal;
+
+  signalHistory.value.push(signal);
+  if (signalHistory.value.length > 18) {
+    signalHistory.value.splice(0, signalHistory.value.length - 18);
+  }
+
+  const averageSignal =
+    signalHistory.value.length > 0
+      ? signalHistory.value.reduce((sum, value) => sum + value, 0) / signalHistory.value.length
+      : signal;
 
   const audioPeakReady =
     settings.audioReactiveCycling &&
     sinceLastCycle >= minGapMs &&
     sinceLastAudioTrigger >= Math.max(3_500, Math.round(minGapMs * 0.45)) &&
-    volume > peakFloor &&
-    volume > averageVolume * 1.45 &&
-    volume - previousVolume > 0.025;
+    (useRawLiveSignal
+      ? signal > peakFloorDb && signal > averageSignal + surgeDb && signal - previousSignal > riseDb
+      : signal > peakFloor && signal > averageSignal * 1.45 && signal - previousSignal > 0.025);
 
   const timerReady = sinceLastCycle >= maxGapMs;
 
@@ -279,6 +288,12 @@ function evaluatePresetCycling() {
 
   sketches.selectNextSketch("internal");
   applyForceHide();
+}
+
+function sampleLiveInputSignalDb() {
+  const result = sampleRawAnalyserLevel(audioSystem.getAnalyserNode(), cycleAnalyserBuffer);
+  cycleAnalyserBuffer = result.buffer;
+  return rawLevelToDecibels(result.level, RAW_AUDIO_NOISE_FLOOR_DB);
 }
 </script>
 
