@@ -50,6 +50,8 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const prismVeilStrength = createPersistedNumber("kaleidosync.prismVeilStrength", 0.78);
   const beatHorizon = createPersistedBoolean("kaleidosync.beatHorizon", true);
   const beatHorizonStrength = createPersistedNumber("kaleidosync.beatHorizonStrength", 0.88);
+  const fractalTraverse = createPersistedBoolean("kaleidosync.fractalTraverse", true);
+  const fractalTraverseStrength = createPersistedNumber("kaleidosync.fractalTraverseStrength", 0.84);
 
   return {
     disableFlashing,
@@ -65,6 +67,8 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     prismVeilStrength,
     beatHorizon,
     beatHorizonStrength,
+    fractalTraverse,
+    fractalTraverseStrength,
   };
 });
 

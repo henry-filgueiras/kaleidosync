@@ -6,6 +6,7 @@
         <Toggle label="Disable Flashing" v-model="settings.disableFlashing" />
         <Toggle label="Neon Mode" v-model="settings.neonMode" />
         <Toggle label="Beat Horizon" v-model="settings.beatHorizon" />
+        <Toggle label="Fractal Traverse" v-model="settings.fractalTraverse" />
         <Toggle label="Prism Veil" v-model="settings.prismVeil" />
         <Toggle label="Show Menu Labels" v-model="settings.showMenuLabels" />
         <Toggle label="Always Show Track" v-model="settings.alwaysShowTrack" />
@@ -14,6 +15,7 @@
         <Toggle label="Infinity Play" v-model="settings.infinityPlay" />
         <Toggle label="Prefer Lossless Audio" v-model="settings.preferLossless" />
         <RangeInput label="Beat Strength" v-model="settings.beatHorizonStrength" :min="0.35" :max="1.35" :step="0.01" />
+        <RangeInput label="Fractal Strength" v-model="settings.fractalTraverseStrength" :min="0.35" :max="1.35" :step="0.01" />
         <RangeInput label="Veil Strength" v-model="settings.prismVeilStrength" :min="0.35" :max="1.35" :step="0.01" />
         <RangeInput label="Cycle Rate" v-model="settings.cycleRate" :min="0.35" :max="1.4" :step="0.01" />
         <p class="hint">Beat Horizon adds visible pre-hit tension and impact flashes. On Spotify it uses real beat timing; elsewhere it falls back to live peak detection.</p>

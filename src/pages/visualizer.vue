@@ -17,6 +17,7 @@
     </Transition>
 
     <BeatHorizon />
+    <FractalTraverse />
     <PrismVeil />
     <AudioDebugMeter />
   </View>
@@ -28,7 +29,7 @@ import { useMagicKeys } from "@vueuse/core";
 import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
 import { RAW_AUDIO_NOISE_FLOOR_DB, rawLevelToDecibels, sampleRawAnalyserLevel } from "../audio-level";
-import { Menu, AudioSources, AudioDebugMeter, BeatHorizon, PrismVeil } from "../components";
+import { Menu, AudioSources, AudioDebugMeter, BeatHorizon, FractalTraverse, PrismVeil } from "../components";
 import { useRouter } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
 import { useSources } from "../stores/sources";
