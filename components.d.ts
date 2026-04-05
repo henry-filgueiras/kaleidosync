@@ -8,6 +8,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AudioDebugMeter: typeof import('./src/components/AudioDebugMeter.vue')['default']
     AudioSources: typeof import('./src/components/AudioSources.vue')['default']
     HomepageHero: typeof import('./src/components/HomepageHero.vue')['default']
     Menu: typeof import('./src/components/Menu.vue')['default']
