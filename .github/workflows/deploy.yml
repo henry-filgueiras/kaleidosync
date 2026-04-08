@@ -39,6 +39,7 @@ jobs:
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
           VITE_API: ${{ vars.VITE_API }}
+          VITE_PUBLIC_BASE: /kaleidosync/
         run: npm run build
 
       - name: Add SPA fallback

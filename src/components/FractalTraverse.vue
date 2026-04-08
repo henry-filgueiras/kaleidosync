@@ -305,27 +305,35 @@ FractalSample samplePizzaTerrainFractal(vec2 discUv, out vec2 fieldUv, out float
   vec2 z = vec2(0.0);
   float trap = 1000000.0;
   float structurePower = max(uStructurePower, 1.01);
-  int terrainIterations = min(uMaxIterations, PIZZA_TERRAIN_MAX_ITERATIONS);
+  int terrainIterations = uMaxIterations;
+
+  if (terrainIterations > PIZZA_TERRAIN_MAX_ITERATIONS) {
+    terrainIterations = PIZZA_TERRAIN_MAX_ITERATIONS;
+  }
   float smoothValue = float(terrainIterations);
   float escaped = 0.0;
   float radius = length(discUv);
   float innerEnvelope = 1.0 - smoothstep(0.0, 0.96, radius);
   vec2 warpedUv = rotate2d(discUv, uRotation * 0.42 + uPizzaSpin * 0.08 + radius * radius * 0.32);
-  float swirl = innerEnvelope * (0.16 + uPizzaWarp * 0.08);
+  float swirl = innerEnvelope * (0.22 + uPizzaWarp * 0.1);
   warpedUv = rotate2d(warpedUv, swirl * sin(radius * 5.4 - uPizzaMorph * 0.12));
   warpedUv +=
     vec2(
       sin((warpedUv.y + radius * 0.22) * (4.2 + uPizzaWarp * 1.9) + uPizzaMorph * 0.16),
       cos((warpedUv.x - radius * 0.14) * (4.8 + uPizzaWarp * 1.6) - uPizzaMorph * 0.12)
     ) *
-    (0.012 + uPizzaWarp * 0.014) *
-    (0.8 - radius * 0.28);
+    (0.018 + uPizzaWarp * 0.018) *
+    (0.86 - radius * 0.24);
   fieldUv = warpedUv;
-  iterationCount = float(max(terrainIterations, 1));
+  if (terrainIterations < 1) {
+    terrainIterations = 1;
+  }
+
+  iterationCount = float(terrainIterations);
   vec2 c =
     uCenter +
-    rotate2d(warpedUv * vec2(1.14, 0.94), uRotation * 0.7 + uPizzaSpin * 0.03) *
-    (uScale * 3.25);
+    rotate2d(warpedUv * vec2(1.22, 0.98), uRotation * 0.7 + uPizzaSpin * 0.03) *
+    (uScale * 5.4);
 
   for (int i = 0; i < PIZZA_TERRAIN_MAX_ITERATIONS; i++) {
     if (i >= terrainIterations) {
@@ -391,16 +399,32 @@ PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
   FractalSample sample = samplePizzaTerrainFractal(discUv, fieldUv, iterationCount);
   float normalized = clamp(sample.smoothValue / max(iterationCount, 1.0), 0.0, 1.0);
   float trapGlow = exp(-sample.trap * (4.6 - uPaletteEnergy * 0.5));
-  float contour = 0.5 + 0.5 * cos(normalized * (11.0 + trapGlow * 3.2) + trapGlow * 5.4);
-  float broadFold = 0.5 + 0.5 * cos(fieldUv.x * 3.4 - fieldUv.y * 2.8 + uPizzaMorph * 0.08);
-  float ridgeField = smoothstep(0.14, 0.92, (1.0 - normalized) * 0.7 + trapGlow * 0.64 + contour * 0.18);
-  float basinField = smoothstep(0.18, 0.98, normalized * 0.86 + (1.0 - trapGlow) * 0.26 + broadFold * 0.08);
-  float signedTerrain = ridgeField * 0.84 - basinField * 0.78 + (contour - 0.5) * 0.18 + (broadFold - 0.5) * 0.12;
+  float contour = 0.5 + 0.5 * cos(normalized * (12.4 + trapGlow * 2.8) + trapGlow * 5.1);
+  float broadFold = 0.5 + 0.5 * cos(fieldUv.x * 3.1 - fieldUv.y * 2.4 + uPizzaMorph * 0.08);
+  float crossFold = 0.5 + 0.5 * sin((fieldUv.x + fieldUv.y) * 3.8 + normalized * 6.4 - uPizzaSpin * 0.08);
+  float crumbNoise =
+    0.5 +
+    0.5 *
+    sin(fieldUv.x * 8.4 + uPizzaMorph * 0.11 + trapGlow * 4.2) *
+    cos(fieldUv.y * 7.8 - uPizzaSpin * 0.06 - normalized * 5.4);
+  float terraceBands =
+    1.0 -
+    abs(fract(normalized * (5.4 + trapGlow * 1.5) + broadFold * 0.22 + crossFold * 0.16) * 2.0 - 1.0);
+  float ridgeField =
+    smoothstep(0.34, 0.92, terraceBands * 0.56 + trapGlow * 0.34 + (1.0 - normalized) * 0.24 + crumbNoise * 0.14);
+  float basinField =
+    smoothstep(0.24, 0.9, normalized * 0.46 + (1.0 - terraceBands) * 0.28 + (1.0 - trapGlow) * 0.18 + (1.0 - crumbNoise) * 0.12);
+  float terrainWarp =
+    (broadFold - 0.5) * 0.12 +
+    (crossFold - 0.5) * 0.1 +
+    (contour - 0.5) * 0.08 +
+    (crumbNoise - 0.5) * 0.18;
+  float signedTerrain = clamp((ridgeField - basinField) * 0.9 + terrainWarp, -1.0, 1.0);
   float rimBand = smoothstep(0.76, 0.92, radius) * (1.0 - smoothstep(0.99, 1.05, radius));
   float crustBlister =
     rimBand *
     (0.5 + 0.5 * sin(angle * 8.0 + contour * 4.8 + trapGlow * 5.4 + uPizzaMorph * 0.18 + radius * 8.0));
-  float domeHeight = 0.028 + (1.0 - radius * radius) * 0.018 * interiorMask;
+  float domeHeight = 0.024 + (1.0 - radius * radius) * 0.014 * interiorMask;
   float crustLift = rimBand * (0.048 + crustBlister * 0.016);
   float grooveDistance = lorenzCurveDistance(rotate2d(discUv * vec2(0.98, 1.05), -0.28 + uPizzaSpin * 0.02));
   float grooveWidth = mix(0.038, 0.018, clamp(uPizzaGrooveStrength * 0.7, 0.0, 1.0));
@@ -411,19 +435,21 @@ PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
   float micro =
     sin(fieldUv.x * 28.0 + trapGlow * 4.0 + uPizzaMorph * 0.28) *
     cos(fieldUv.y * 25.0 - normalized * 6.0 - uPizzaSpin * 0.1) *
-    0.0032 *
+    0.0042 *
     interiorMask *
     (0.45 + trapGlow * 0.55);
-  float sliceCue = (1.0 - smoothstep(0.0, 0.08, seamDistance)) * smoothstep(0.42, 0.98, radius);
-  float carveAmplitude = (0.024 + uPizzaCarveStrength * 0.03) * interiorMask;
-  float grooveDepth = groove * (0.008 + uPizzaGrooveStrength * 0.024);
+  float sliceCue = (1.0 - smoothstep(0.0, 0.06, seamDistance)) * smoothstep(0.82, 0.98, radius) * 0.55;
+  float carveAmplitude = (0.032 + uPizzaCarveStrength * 0.046) * interiorMask;
+  float grooveDepth = groove * (0.01 + uPizzaGrooveStrength * 0.028);
   float baseHeight = domeHeight + crustLift;
-  float height = baseHeight + signedTerrain * carveAmplitude - grooveDepth - sliceCue * 0.0035 + micro;
-  float ridge = smoothstep(0.5, 0.92, 0.5 + signedTerrain * 0.6 + contour * 0.12 + crustMask * 0.2);
-  float valley = clamp(smoothstep(0.28, 0.9, 0.52 - signedTerrain * 0.56 + groove * 0.42), 0.0, 1.0) * interiorMask;
-  float sauce = clamp(valley * 0.76 + groove * 0.22 + sliceCue * 0.08 - crustMask * 0.36, 0.0, 1.0);
-  float wetness = clamp(valley * 0.64 + groove * 0.4 + sliceCue * 0.06 + (1.0 - ridge) * 0.12, 0.0, 1.0);
-  float glow = valley * (0.14 + groove * 0.32 + uPizzaValleyGlow * 0.3) + sliceCue * 0.02;
+  float height = baseHeight + signedTerrain * carveAmplitude - grooveDepth - sliceCue * 0.0016 + micro;
+  float ridge =
+    clamp(smoothstep(0.08, 0.72, signedTerrain + terraceBands * 0.24 + broadFold * 0.08) + rimBand * 0.18, 0.0, 1.0);
+  float valley =
+    clamp(smoothstep(0.14, 0.82, -signedTerrain + (1.0 - terraceBands) * 0.18 + groove * 0.42), 0.0, 1.0) * interiorMask;
+  float sauce = clamp(valley * 0.68 + groove * 0.24 + (1.0 - terraceBands) * 0.08 + sliceCue * 0.03 - crustMask * 0.38, 0.0, 1.0);
+  float wetness = clamp(valley * 0.58 + groove * 0.42 + (1.0 - ridge) * 0.14 + contour * 0.05, 0.0, 1.0);
+  float glow = valley * (0.12 + groove * 0.34 + uPizzaValleyGlow * 0.28) + groove * 0.05;
 
   result.height = height;
   result.baseHeight = baseHeight;
@@ -440,13 +466,13 @@ PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
 
 void pizzaCameraRay(vec2 fragCoord, out vec3 rayOrigin, out vec3 rayDirection) {
   vec2 screen = (fragCoord - uResolution * 0.5) / max(uResolution.y, 0.0001);
-  float orbit = 0.22 + sin(uPizzaSpin * 0.12 + uPizzaMorph * 0.03) * 0.08;
-  rayOrigin = vec3(sin(orbit) * 0.36 - 0.24, -1.18 + cos(orbit) * 0.12, 1.16 + sin(uPizzaMorph * 0.04) * 0.04);
-  vec3 target = vec3(0.0, 0.0, 0.035);
+  float orbit = 0.28 + sin(uPizzaSpin * 0.12 + uPizzaMorph * 0.03) * 0.09;
+  rayOrigin = vec3(sin(orbit) * 0.42 - 0.28, -1.34 + cos(orbit) * 0.14, 0.98 + sin(uPizzaMorph * 0.04) * 0.05);
+  vec3 target = vec3(0.0, -0.02, 0.01);
   vec3 forward = normalize(target - rayOrigin);
   vec3 right = normalize(cross(forward, vec3(0.0, 0.0, 1.0)));
   vec3 up = normalize(cross(right, forward));
-  rayDirection = normalize(forward * 1.72 + right * screen.x + up * (screen.y + 0.04));
+  rayDirection = normalize(forward * 1.56 + right * screen.x * 0.96 + up * (screen.y + 0.01));
 }
 
 bool intersectPizzaTop(
@@ -605,8 +631,11 @@ vec3 shadePizzaTopSurface(vec3 hitPosition, vec2 discUv, PizzaTerrainSample terr
   float rimLight = max(dot(normal, rimLightDirection), 0.0);
   float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
   float slope = 1.0 - clamp(normal.z, 0.0, 1.0);
-  float toastMask = clamp(terrain.ridge * 0.64 + slope * 0.46 + terrain.crustMask * 0.3, 0.0, 1.0);
-  float sauceMask = clamp(terrain.sauce + terrain.groove * 0.16 - terrain.crustMask * 0.34, 0.0, 1.0);
+  float reliefContrast = clamp((terrain.height - terrain.baseHeight) / (0.012 + uPizzaCarveStrength * 0.05), -1.0, 1.0);
+  float ridgeAccent = smoothstep(0.08, 0.72, reliefContrast + terrain.ridge * 0.52 + slope * 0.18);
+  float valleyAccent = smoothstep(0.12, 0.82, -reliefContrast + terrain.valley * 0.56 + terrain.groove * 0.32);
+  float toastMask = clamp(terrain.ridge * 0.54 + ridgeAccent * 0.34 + slope * 0.52 + terrain.crustMask * 0.24, 0.0, 1.0);
+  float sauceMask = clamp(terrain.sauce * 0.72 + valleyAccent * 0.34 + terrain.groove * 0.16 - terrain.crustMask * 0.34, 0.0, 1.0);
   float shimmer =
     0.5 +
     0.5 *
@@ -624,10 +653,10 @@ vec3 shadePizzaTopSurface(vec3 hitPosition, vec2 discUv, PizzaTerrainSample terr
     pow(max(dot(reflect(-fillLightDirection, normal), viewDirection), 0.0), 22.0) *
     terrain.wetness *
     0.16;
-  float cavity = clamp(1.0 - terrain.valley * 0.22 - terrain.groove * 0.08, 0.68, 1.0);
-  vec3 cheeseColor = mix(vec3(0.95, 0.77, 0.4), vec3(1.0, 0.9, 0.58), 0.26 + terrain.ridge * 0.12);
+  float cavity = clamp(1.0 - valleyAccent * 0.32 - terrain.groove * 0.1, 0.52, 1.0);
+  vec3 cheeseColor = mix(vec3(0.84, 0.66, 0.32), vec3(0.98, 0.87, 0.54), 0.24 + terrain.ridge * 0.16);
   vec3 brownedCheese = vec3(0.58, 0.29, 0.08);
-  vec3 sauceColor = mix(vec3(0.64, 0.12, 0.07), vec3(0.92, 0.3, 0.11), 0.28 + terrain.groove * 0.3 + terrain.glow * 0.18);
+  vec3 sauceColor = mix(vec3(0.48, 0.1, 0.06), vec3(0.84, 0.28, 0.11), 0.26 + terrain.groove * 0.3 + terrain.glow * 0.22);
   vec3 crustColor = mix(vec3(0.76, 0.53, 0.24), vec3(0.9, 0.72, 0.4), terrain.crustMask * 0.32 + terrain.ridge * 0.08);
   vec3 baseColor = mix(cheeseColor, sauceColor, sauceMask);
 
@@ -636,13 +665,14 @@ vec3 shadePizzaTopSurface(vec3 hitPosition, vec2 discUv, PizzaTerrainSample terr
   baseColor *= cavity;
 
   vec3 litColor =
-    baseColor * (0.2 + normal.z * 0.22) +
-    baseColor * vec3(1.08, 1.0, 0.92) * keyLight * 0.86 +
-    baseColor * vec3(0.64, 0.42, 0.24) * fillLight * 0.34 +
-    baseColor * vec3(0.38, 0.22, 0.14) * rimLight * 0.12;
+    baseColor * (0.12 + normal.z * 0.18) +
+    baseColor * vec3(1.04, 0.98, 0.9) * keyLight * 0.78 +
+    baseColor * vec3(0.56, 0.38, 0.22) * fillLight * 0.28 +
+    baseColor * vec3(0.42, 0.24, 0.14) * rimLight * 0.16;
   litColor += vec3(1.0, 0.84, 0.58) * (specular + fillSpecular);
-  litColor += sauceColor * terrain.glow * (0.04 + 0.1 * uPizzaValleyGlow) * (0.35 + shimmer * 0.65);
-  litColor += sauceColor * fresnel * terrain.wetness * 0.05;
+  litColor += brownedCheese * ridgeAccent * 0.08;
+  litColor += sauceColor * valleyAccent * (0.06 + 0.12 * uPizzaValleyGlow) * (0.35 + shimmer * 0.65);
+  litColor += sauceColor * fresnel * terrain.wetness * 0.06;
 
   return pow(litColor, vec3(0.94));
 }

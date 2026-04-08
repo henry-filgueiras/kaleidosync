@@ -7,6 +7,15 @@ import { config } from "dotenv";
 config({ quiet: true });
 config({ path: ".env.local", override: true, quiet: true });
 
+function normalizeBasePath(basePath?: string) {
+  if (!basePath || basePath.trim() === "") {
+    return "/";
+  }
+
+  const withLeadingSlash = basePath.startsWith("/") ? basePath : `/${basePath}`;
+  return withLeadingSlash.endsWith("/") ? withLeadingSlash : `${withLeadingSlash}/`;
+}
+
 async function loadSageRouterPlugin() {
   const moduleUrl = pathToFileURL(
     pathResolve(__dirname, "node_modules/@wearesage/vue/dist/router/vite-plugin-sage-router.js")
@@ -27,6 +36,7 @@ export default defineConfig(async ({ command }) => {
     }
   });
   const routerPlugin = await loadSageRouterPlugin();
+  const basePath = normalizeBasePath(process.env.VITE_PUBLIC_BASE);
 
   const include = [
     ...(baseConfig.optimizeDeps?.include || []).filter(dep => dep !== "phone"),
@@ -46,7 +56,7 @@ export default defineConfig(async ({ command }) => {
 
   return {
     ...baseConfig,
-    base: command === "build" ? "/kaleidosync/" : "/",
+    base: command === "build" ? basePath : "/",
     plugins: [routerPlugin, ...(baseConfig.plugins || [])],
     define: {
       ...(baseConfig.define || {}),

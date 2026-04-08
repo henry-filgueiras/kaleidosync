@@ -5,6 +5,8 @@ export const VISUALIZATION_MODES = ["classic", "fractal-traverse"] as const;
 export type VisualizationMode = (typeof VISUALIZATION_MODES)[number];
 export const FRACTAL_TRAVERSE_LAYOUT_MODES = ["full-frame", "pizza-kaleido", "pizza-coin"] as const;
 export type FractalTraverseLayoutMode = (typeof FRACTAL_TRAVERSE_LAYOUT_MODES)[number];
+const PIZZA_TOPOGRAPHY_MIGRATION_KEY = "kaleidosync.visualizationDefaultsVersion";
+const PIZZA_TOPOGRAPHY_MIGRATION_VERSION = "pizza-topography-v1";
 
 function createPersistedBoolean(key: string, fallback: boolean) {
   const value = ref(fallback);
@@ -88,7 +90,7 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const beatHorizonStrength = createPersistedNumber("kaleidosync.beatHorizonStrength", 0.88);
   const visualizationMode = createPersistedString<VisualizationMode>(
     "kaleidosync.visualizationMode",
-    "classic",
+    "fractal-traverse",
     VISUALIZATION_MODES,
     () => {
       if (typeof window === "undefined") return null;
@@ -98,7 +100,7 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const fractalTraverseStrength = createPersistedNumber("kaleidosync.fractalTraverseStrength", 0.84);
   const fractalTraverseLayoutMode = createPersistedString<FractalTraverseLayoutMode>(
     "kaleidosync.fractalTraverseLayoutMode",
-    "full-frame",
+    "pizza-kaleido",
     FRACTAL_TRAVERSE_LAYOUT_MODES
   );
   const fractalTraverseSliceCount = createPersistedNumber("kaleidosync.fractalTraverseSliceCount", 8);
@@ -106,6 +108,25 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const fractalTraversePizzaGrooveStrength = createPersistedNumber("kaleidosync.fractalTraversePizzaGrooveStrength", 0.72);
   const fractalTraversePizzaCrustProtection = createPersistedNumber("kaleidosync.fractalTraversePizzaCrustProtection", 0.82);
   const fractalTraversePizzaValleyGlow = createPersistedNumber("kaleidosync.fractalTraversePizzaValleyGlow", 0.38);
+
+  if (typeof window !== "undefined") {
+    const migrationVersion = window.localStorage.getItem(PIZZA_TOPOGRAPHY_MIGRATION_KEY);
+
+    if (migrationVersion !== PIZZA_TOPOGRAPHY_MIGRATION_VERSION) {
+      const savedVisualizationMode = window.localStorage.getItem("kaleidosync.visualizationMode");
+      const savedLayoutMode = window.localStorage.getItem("kaleidosync.fractalTraverseLayoutMode");
+
+      if (savedVisualizationMode === null || savedVisualizationMode === "classic") {
+        visualizationMode.value = "fractal-traverse";
+      }
+
+      if (savedLayoutMode === null || savedLayoutMode === "full-frame") {
+        fractalTraverseLayoutMode.value = "pizza-kaleido";
+      }
+
+      window.localStorage.setItem(PIZZA_TOPOGRAPHY_MIGRATION_KEY, PIZZA_TOPOGRAPHY_MIGRATION_VERSION);
+    }
+  }
 
   return {
     disableFlashing,

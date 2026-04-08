@@ -4,20 +4,38 @@
 
     <IconButton
       v-if="sources.source === AudioSource.AUDIUS"
-      to="/audius"
+      aria-label="Library"
       :label="settings.showMenuLabels ? 'Library' : undefined"
-      icon="vinyl" />
+      icon="vinyl"
+      @click="router.push('/audius')" />
 
-    <IconButton icon="eye" :label="settings.showMenuLabels ? 'Designs' : undefined" @click="$emit('open-designs')" />
+    <IconButton
+      aria-label="Designs"
+      icon="eye"
+      :label="settings.showMenuLabels ? 'Designs' : undefined"
+      @click="$emit('open-designs')" />
 
-    <IconButton to="/design" icon="sliders" :label="settings.showMenuLabels ? 'Customize' : undefined" />
+    <IconButton
+      aria-label="Customize"
+      icon="sliders"
+      :label="settings.showMenuLabels ? 'Customize' : undefined"
+      @click="router.push('/design')" />
 
-    <IconButton to="/settings" icon="settings" :label="settings.showMenuLabels ? 'Settings' : undefined" />
+    <IconButton
+      aria-label="Settings"
+      icon="settings"
+      :label="settings.showMenuLabels ? 'Settings' : undefined"
+      @click="router.push('/settings')" />
 
-    <IconButton @click="share" icon="share" :label="settings.showMenuLabels ? 'Share' : undefined" />
+    <IconButton
+      aria-label="Share"
+      @click="share"
+      icon="share"
+      :label="settings.showMenuLabels ? 'Share' : undefined" />
 
     <IconButton
       v-if="viewport.fullscreenSupported"
+      aria-label="Fullscreen"
       @click="viewport.toggleFullscreen"
       icon="fullscreen"
       :label="settings.showMenuLabels ? 'Fullscreen' : undefined" />
@@ -27,6 +45,7 @@
 <script setup lang="ts">
 import { IconButton, useViewport, useNativeShare, AudioSourceButton } from "@wearesage/vue";
 import { AudioSource } from "@wearesage/shared";
+import { useRouter } from "../sage-router-pages";
 import { useSources } from "../stores/sources";
 import { useVisualizerSettings } from "../stores/visualizer-settings";
 
@@ -36,6 +55,7 @@ const viewport = useViewport();
 const sources = useSources();
 const share = useNativeShare();
 const settings = useVisualizerSettings();
+const router = useRouter();
 </script>
 
 <style lang="scss" scoped>
