@@ -196,6 +196,11 @@ vec3 colorize(FractalSample sample, vec2 uv, float paletteOffset) {
   return mix(desaturated * (1.0 - uVoidFade * 0.54), vec3(0.003, 0.005, 0.009), voidMask);
 }
 
+vec3 boostSaturation(vec3 color, float amount) {
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  return mix(vec3(luma), color, amount);
+}
+
 FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float paletteOffset) {
   vec2 centered = fragCoord / uResolution - 0.5;
   paletteUv = vec2(centered.x, centered.y);
@@ -213,8 +218,8 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float palette
 
     float seamBias = 1.0 - seamDistance;
     float halfSlice = max(sliceAngle * 0.5, 0.0001);
-    float outsideMix = smoothstep(0.94, 1.2, radius);
-    float haloMix = smoothstep(0.86, 1.02, radius) * (1.0 - smoothstep(1.18, 1.54, radius));
+    float outsideMix = smoothstep(0.88, 1.08, radius);
+    float haloMix = smoothstep(0.82, 0.96, radius) * (1.0 - smoothstep(1.12, 1.42, radius));
     float radiusInversion = clamp(1.02 / max(radius, 0.0001), 0.18, 1.06);
     float phaseCos = cos(slicePhase);
     float phaseSin = sin(slicePhase);
@@ -222,10 +227,14 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float palette
       0.5 +
       0.5 *
       sin((radius - 1.0) * (5.4 + uPizzaWarp * 2.6) - uPizzaMorph * 0.34 + slicePhase * (1.0 + phaseCos * 0.14));
-    float continuationRadius = clamp(mix(radiusInversion, 0.26 + recurrenceBand * 0.54, 0.46 + haloMix * 0.18), 0.18, 0.94);
+    float continuationRadius = clamp(
+      mix(radiusInversion * (0.72 + recurrenceBand * 0.18), 0.3 + recurrenceBand * 0.22, 0.62 + haloMix * 0.16),
+      0.18,
+      0.72
+    );
     float continuationTwist =
-      (radius - 1.0) * (0.48 + uPizzaWarp * 0.22) +
-      log(1.0 + max(radius - 1.0, 0.0) * 2.4) * (0.58 + uSymmetryStrength * 0.22) +
+      (radius - 1.0) * (0.72 + uPizzaWarp * 0.28) +
+      log(1.0 + max(radius - 1.0, 0.0) * 2.8) * (0.84 + uSymmetryStrength * 0.3) +
       phaseSin * 0.08;
     float mappedRadius = mix(radius, continuationRadius, outsideMix);
     float mappedAngle = canonicalAngle + continuationTwist * outsideMix;
@@ -233,7 +242,7 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float palette
     vec2 radialDirection = radius > 0.0001 ? discUv / radius : vec2(0.0, 1.0);
     vec2 mappedDiscUv = radialDirection * mappedRadius;
     float discWarpEnvelope = smoothstep(0.05, 0.3, radius) * (1.0 - smoothstep(0.82, 1.02, radius));
-    float exteriorWarpEnvelope = outsideMix * (1.0 - smoothstep(1.22, 2.04, radius));
+    float exteriorWarpEnvelope = outsideMix * (1.0 - smoothstep(1.14, 2.06, radius));
     float warpEnvelope = max(discWarpEnvelope, exteriorWarpEnvelope);
     float radialWarp =
       sin(mappedRadius * (7.6 + phaseCos * 1.2) - uPizzaMorph * (1.12 + phaseSin * 0.12) + slicePhase) *
@@ -247,23 +256,23 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float palette
     // The whole disc is generated from one wedge domain; slice content changes only
     // through the symmetry phase k -> exp(i * 2pi * m * k / n).
     vec2 wedgeUv = vec2(
-      wedgeCoord * (0.92 + uSymmetryStrength * 0.16 + phaseCos * 0.05) + angularWarp,
-      (mappedRadius - 0.47) * (1.42 + phaseSin * 0.12) + radialWarp
+      wedgeCoord * (0.92 + uSymmetryStrength * 0.16 + phaseCos * 0.05 + outsideMix * 0.26) + angularWarp,
+      (mappedRadius - 0.41) * (1.54 + phaseSin * 0.16 + outsideMix * 0.22) + radialWarp
     );
     wedgeUv = rotate2d(
-      wedgeUv * (0.9 + uSymmetryStrength * 0.12 + phaseCos * 0.08) +
-      vec2(phaseCos, phaseSin) * (0.028 + uSymmetryStrength * 0.028) +
-      mappedDiscUv * (0.034 + uPizzaWarp * 0.028),
-      phaseSin * (0.22 + uSymmetryStrength * 0.18) + phaseCos * uPizzaMorph * 0.035
+      wedgeUv * (0.9 + uSymmetryStrength * 0.12 + phaseCos * 0.08 + outsideMix * 0.14) +
+      vec2(phaseCos, phaseSin) * (0.028 + uSymmetryStrength * 0.028 + outsideMix * 0.038) +
+      mappedDiscUv * (0.034 + uPizzaWarp * 0.028 + outsideMix * 0.048),
+      phaseSin * (0.22 + uSymmetryStrength * 0.18) + phaseCos * uPizzaMorph * 0.035 + outsideMix * (0.22 + phaseSin * 0.12)
     );
 
-    float sampleSpan = uScale * (0.84 + uPizzaWarp * 0.16 + uSymmetryStrength * 0.12) * mix(1.0, 0.76, outsideMix);
-    paletteUv = mix(mappedDiscUv, wedgeUv * 0.48, 0.42 + outsideMix * 0.2);
+    float sampleSpan = uScale * (0.84 + uPizzaWarp * 0.16 + uSymmetryStrength * 0.12) * mix(1.0, 0.56, outsideMix);
+    paletteUv = mix(mappedDiscUv, wedgeUv * 0.54, 0.44 + outsideMix * 0.28);
     paletteOffset =
       (phaseCos * 0.045 + phaseSin * 0.022) * uSymmetryStrength +
       seamBias * 0.024 +
       mappedRadius * 0.02 +
-      outsideMix * (0.032 + recurrenceBand * 0.024) +
+      outsideMix * (0.05 + recurrenceBand * 0.036) +
       mix(wedgeCoord * 0.006, wedgeCoord * 0.012, step(0.5, uSymmetryGroup));
     return sampleMutatingMandelbrot(uCenter + rotate2d(wedgeUv, uRotation + uPizzaSpin * 0.07) * sampleSpan);
   }
@@ -309,16 +318,16 @@ vec3 applyPizzaComposition(vec3 color, vec2 fragCoord) {
 
   float halfSlice = max(sliceAngle * 0.5, 0.0001);
   float wedgeCoord = canonicalAngle / halfSlice;
-  float discMask = 1.0 - smoothstep(0.92, 0.985, radius);
-  float haloMask = smoothstep(0.88, 1.02, radius) * (1.0 - smoothstep(1.16, 1.42, radius));
-  float outerFieldMask = smoothstep(0.98, 1.3, radius) * (1.0 - smoothstep(1.94, 2.24, radius));
+  float discMask = 1.0 - smoothstep(0.82, 0.9, radius);
+  float haloMask = smoothstep(0.8, 0.94, radius) * (1.0 - smoothstep(1.08, 1.34, radius));
+  float outerFieldMask = smoothstep(0.88, 1.14, radius) * (1.0 - smoothstep(2.02, 2.3, radius));
   float seamShadow = (1.0 - smoothstep(0.04, 0.2, seamDistance)) * smoothstep(0.1, 0.92, radius);
   float seamGlow = (1.0 - smoothstep(0.0, 0.1, seamDistance)) * smoothstep(0.16, 0.92, radius);
   float hubMask = 1.0 - smoothstep(0.045, 0.17, radius);
   float hubRing = smoothstep(0.08, 0.11, radius) * (1.0 - smoothstep(0.15, 0.19, radius));
-  float rim = smoothstep(0.74, 0.9, radius) * (1.0 - smoothstep(0.96, 1.02, radius));
+  float rim = smoothstep(0.66, 0.82, radius) * (1.0 - smoothstep(0.88, 0.96, radius));
   float exteriorReach = 1.0 - smoothstep(1.7, 2.18, radius);
-  vec3 background = vec3(0.004, 0.006, 0.011);
+  vec3 background = vec3(0.008, 0.007, 0.014);
   vec3 seamColor = vec3(0.024, 0.018, 0.03) + vec3(0.08, 0.055, 0.04) * (0.22 + uPaletteEnergy * 0.16);
   vec3 crustGlow = vec3(0.16, 0.11, 0.08) * (0.06 + uPaletteEnergy * 0.05);
   vec3 hubGlow = vec3(0.11, 0.1, 0.13) * (0.08 + uAmbientLift * 0.12);
@@ -328,15 +337,18 @@ vec3 applyPizzaComposition(vec3 color, vec2 fragCoord) {
   float radialBands = 0.5 + 0.5 * cos((radius - 0.92) * (8.4 + uPizzaWarp * 2.4) - uPizzaMorph * 0.4 + slicePhase);
   float exteriorSymmetry = sliceBloom * (0.52 + radialBands * 0.48);
   float exteriorLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-  vec3 exteriorBase = mix(vec3(exteriorLuma * (0.28 + uAmbientLift * 0.2)), color, 0.44 + uPaletteEnergy * 0.18);
+  float spokeFan = pow(clamp(1.0 - seamDistance, 0.0, 1.0), 2.1);
+  vec3 exteriorBase = mix(vec3(exteriorLuma * (0.28 + uAmbientLift * 0.2)), color, 0.52 + uPaletteEnergy * 0.24);
+  exteriorBase = boostSaturation(pow(max(exteriorBase, vec3(0.0)), vec3(0.74)), 1.24 + exteriorSymmetry * 0.42);
   vec3 haloColor =
-    exteriorBase * (0.54 + uAmbientLift * 0.34) +
-    seamColor * (0.1 + mirrorBloom * 0.08) +
-    crustGlow * exteriorSymmetry * 0.14;
+    exteriorBase * (0.98 + uAmbientLift * 0.48 + exteriorSymmetry * 0.24) +
+    seamColor * (0.22 + mirrorBloom * 0.16 + spokeFan * 0.14) +
+    crustGlow * exteriorSymmetry * 0.28;
   vec3 outerColor =
-    mix(vec3(exteriorLuma), exteriorBase, 0.72) * (0.24 + uAmbientLift * 0.22 + uPaletteEnergy * 0.08);
-  outerColor += seamColor * exteriorSymmetry * (0.08 + mirrorBloom * 0.07);
-  outerColor += crustGlow * (0.03 + radialBands * 0.045);
+    mix(vec3(exteriorLuma), exteriorBase, 0.84) * (0.58 + uAmbientLift * 0.36 + uPaletteEnergy * 0.16 + exteriorSymmetry * 0.22);
+  outerColor += seamColor * spokeFan * (0.26 + mirrorBloom * 0.16);
+  outerColor += crustGlow * (0.14 + radialBands * 0.18 + exteriorSymmetry * 0.1);
+  outerColor = boostSaturation(outerColor, 1.38 + mirrorBloom * 0.24);
 
   vec3 discColor = color;
 
