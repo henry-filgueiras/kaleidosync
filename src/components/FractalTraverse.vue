@@ -549,13 +549,14 @@ vec3 applyCoinComposition(vec3 color, CoinProjection projection) {
 vec2 backdropDiscUvFromFrag(vec2 fragCoord) {
   vec2 backdropUv = discUvFromFrag(fragCoord) - uCoinOffset * 0.28;
   float radius = length(backdropUv);
-  float outerTwist = smoothstep(0.32, 2.35, radius);
+  float outerTwist = smoothstep(0.4, 2.32, radius);
+  float outerTwistFocus = outerTwist * outerTwist;
   backdropUv = rotate2d(backdropUv, uPizzaBackdropRotation);
 
   float torsion =
-    uPizzaBackdropTorsion * mix(0.08, 1.18, outerTwist) +
-    (uCoinTilt.x * backdropUv.y - uCoinTilt.y * backdropUv.x) * (0.04 + outerTwist * 0.08) +
-    sin(radius * (2.8 + uPizzaWarp * 0.8) - uPizzaBackdropRotation * 1.24 + uCoinPrecession * 0.9) * (0.022 + outerTwist * 0.024 + uCoinShimmer * 0.016);
+    uPizzaBackdropTorsion * mix(0.04, 1.32, outerTwistFocus) +
+    (uCoinTilt.x * backdropUv.y - uCoinTilt.y * backdropUv.x) * (0.03 + outerTwist * 0.07) +
+    sin(radius * (2.8 + uPizzaWarp * 0.8) - uPizzaBackdropRotation * 1.24 + uCoinPrecession * 0.9) * (0.018 + outerTwistFocus * 0.03 + uCoinShimmer * 0.014);
   backdropUv = rotate2d(backdropUv, torsion);
   backdropUv *= 0.92 + uCoinDepth * 0.04;
   backdropUv +=
@@ -563,7 +564,7 @@ vec2 backdropDiscUvFromFrag(vec2 fragCoord) {
       cos(uPizzaBackdropRotation * 0.74 + uCoinPrecession * 0.36),
       sin(uPizzaBackdropRotation * 0.58 - uCoinFlip * 0.18)
     ) *
-    (0.016 + abs(uPizzaBackdropTorsion) * 0.012 + outerTwist * 0.008 + uCoinShimmer * 0.008);
+    (0.014 + abs(uPizzaBackdropTorsion) * 0.01 + outerTwistFocus * 0.012 + uCoinShimmer * 0.008);
 
   return backdropUv;
 }
@@ -2959,21 +2960,32 @@ function updatePizzaFieldMotion(deltaSeconds: number, now: number) {
   const pulseImpact = pulse.impact * pulseConfidence;
   const pulseAnticipation = pulse.anticipation * pulseConfidence;
   const reactivity = clamp(0.56 + ((strength.value - 0.35) / 1) * 0.94, 0.56, 1.5);
+  const fieldExcitement = 1 - pizzaFieldMotion.settle;
   const driftWave = Math.sin(now * 0.00021 + traversal.segmentSeed * TAU * 0.72 + traversal.palettePhase * TAU * 0.18);
+  const momentumDirection =
+    Math.abs(pizzaFieldMotion.angularVelocity) > 0.05
+      ? (pizzaFieldMotion.angularVelocity >= 0 ? 1 : -1)
+      : Math.abs(pizzaFieldMotion.targetVelocity) > 0.04
+        ? (pizzaFieldMotion.targetVelocity >= 0 ? 1 : -1)
+        : 0;
+  const coinDirection = Math.abs(coinMotion.spinVelocity) > 0.18 ? (coinMotion.spinVelocity >= 0 ? 1 : -1) : 0;
   const driftDirection =
-    Math.abs(coinMotion.spinVelocity) > 0.14 ? (coinMotion.spinVelocity >= 0 ? 1 : -1) : driftWave >= 0 ? 1 : -1;
-  const driftBias = driftWave * 0.045;
+    momentumDirection !== 0 ? momentumDirection : coinDirection !== 0 ? coinDirection : driftWave >= 0 ? 1 : -1;
+  const driftBias = driftWave * 0.036;
   const kickSignal = clamp(
     pulseImpact * 0.88 + audio.bassDrive * 0.48 + audio.surge * 0.24 + audio.noveltySmoothed * 0.18,
     0,
     1.6
   );
   const kickRise = Math.max(0, kickSignal - pizzaFieldMotion.lastKickSignal);
+  const kickAccent = smoothStep((kickRise - 0.05) / 0.22);
   const coinCoupling =
-    coinMotion.spinVelocity * (0.1 + audio.bassDrive * 0.02) +
-    coinMotion.flipVelocity * 0.018 +
-    Math.sin(coinMotion.precession) * (0.02 + audio.midDrive * 0.012);
-  const driftVelocity = driftDirection * (0.08 + audio.ambient * 0.11 + audio.energy * 0.03) + driftBias;
+    coinMotion.spinVelocity * (0.084 + audio.bassDrive * 0.016) +
+    coinMotion.flipVelocity * 0.014 +
+    Math.sin(coinMotion.precession) * (0.016 + audio.midDrive * 0.01);
+  const driftVelocity = driftDirection * (0.074 + audio.ambient * 0.1 + audio.energy * 0.028 + fieldExcitement * 0.02) + driftBias;
+  const directionalDrive =
+    (audio.spectralFlux * 0.03 + audio.midDrive * 0.026 + fieldExcitement * 0.018) * driftDirection;
 
   pizzaFieldMotion.lastKickSignal = kickSignal;
 
@@ -2982,28 +2994,32 @@ function updatePizzaFieldMotion(deltaSeconds: number, now: number) {
     clamp(
       driftVelocity +
         coinCoupling +
-        pulseAnticipation * driftDirection * 0.09 +
-        (audio.spectralFlux * 0.04 + audio.midDrive * 0.035) * reactivity,
+        pulseAnticipation * driftDirection * 0.11 +
+        directionalDrive * reactivity,
       -0.92,
       0.92
     ),
-    1.02,
+    1.08 + pizzaFieldMotion.settle * 0.24,
     deltaSeconds
   );
 
-  if (kickRise > 0.04) {
+  if (kickAccent > 0) {
     // Bass/pulse add a deliberate rotational shove so the field feels driven, not just drifting.
+    const shoveDirection = momentumDirection !== 0 ? momentumDirection : driftDirection;
     pizzaFieldMotion.angularVelocity +=
-      driftDirection * (0.22 + pulseImpact * 0.56 + audio.bassDrive * 0.34 + audio.surge * 0.14) * reactivity;
+      shoveDirection * (0.2 + kickAccent * 0.18 + pulseImpact * 0.58 + audio.bassDrive * 0.36 + audio.surge * 0.16) * reactivity;
     pizzaFieldMotion.backdropTorsionVelocity +=
-      driftDirection * (0.06 + pulseImpact * 0.14 + audio.midDrive * 0.05 + audio.spectralFlux * 0.04) * reactivity;
+      shoveDirection *
+      (0.045 + kickAccent * 0.055 + pulseImpact * 0.15 + audio.midDrive * 0.048 + audio.spectralFlux * 0.04) *
+      (0.94 + fieldExcitement * 0.22) *
+      reactivity;
   }
 
   // The field has its own momentum, then eases toward a quieter drift target between impacts.
   pizzaFieldMotion.angularVelocity = damp(
     pizzaFieldMotion.angularVelocity,
     pizzaFieldMotion.targetVelocity,
-    1.02 + audio.ambient * 0.22 + audio.energy * 0.18,
+    0.9 + audio.ambient * 0.18 + audio.energy * 0.16 + pizzaFieldMotion.settle * 0.32,
     deltaSeconds
   );
   pizzaFieldMotion.rotation = wrapAngle(pizzaFieldMotion.rotation + pizzaFieldMotion.angularVelocity * deltaSeconds);
@@ -3011,43 +3027,46 @@ function updatePizzaFieldMotion(deltaSeconds: number, now: number) {
   const lagTarget =
     pizzaFieldMotion.rotation -
     pizzaFieldMotion.angularVelocity *
-      (0.34 + audio.midDrive * 0.2 + audio.spectralFlux * 0.12 + Math.abs(coinMotion.flipVelocity) * 0.03);
+      (0.38 + audio.midDrive * 0.24 + audio.spectralFlux * 0.14 + fieldExcitement * 0.06 + Math.abs(coinMotion.flipVelocity) * 0.025);
   const rotationGap = angleDelta(pizzaFieldMotion.rotation, pizzaFieldMotion.backdropLagRotation);
   const torsionTarget = clamp(
-    rotationGap * (1.08 + audio.midDrive * 0.72 + audio.spectralFlux * 0.4) +
-      (coinMotion.spinVelocity - pizzaFieldMotion.angularVelocity) * 0.15 +
-      coinMotion.flipVelocity * 0.048,
-    -1.12,
-    1.12
+    rotationGap * (1.16 + audio.midDrive * 0.78 + audio.spectralFlux * 0.44 + fieldExcitement * 0.16) +
+      (coinMotion.spinVelocity - pizzaFieldMotion.angularVelocity) * 0.12 +
+      coinMotion.flipVelocity * 0.038,
+    -1.18,
+    1.18
   );
 
   // Backdrop lag is intentionally slower than the field so the background feels dragged through a viscous medium.
   pizzaFieldMotion.backdropLagRotation = dampAngle(
     pizzaFieldMotion.backdropLagRotation,
     lagTarget,
-    0.72 + audio.ambient * 0.18 + audio.midDrive * 0.1,
+    0.68 + audio.ambient * 0.16 + audio.midDrive * 0.1 + pizzaFieldMotion.settle * 0.16,
     deltaSeconds
   );
   pizzaFieldMotion.backdropTorsionVelocity = damp(
     pizzaFieldMotion.backdropTorsionVelocity,
     torsionTarget,
-    1.24 + audio.midDrive * 0.28 + audio.spectralFlux * 0.22,
+    1.12 + audio.midDrive * 0.24 + audio.spectralFlux * 0.2 + pizzaFieldMotion.settle * 0.2,
     deltaSeconds
   );
   pizzaFieldMotion.backdropTorsion = damp(
     pizzaFieldMotion.backdropTorsion,
     pizzaFieldMotion.backdropTorsionVelocity,
-    1.52,
+    1.34 + pizzaFieldMotion.settle * 0.24,
     deltaSeconds
   );
 
-  const settleTarget =
-    coinMotion.phase === "idle"
-      ? 1
-      : coinMotion.phase === "settle"
-        ? 0.64
-        : 0.2 + audio.spectralFlux * 0.08 + Math.min(Math.abs(pizzaFieldMotion.backdropTorsion), 0.14);
-  pizzaFieldMotion.settle = damp(pizzaFieldMotion.settle, settleTarget, 2, deltaSeconds);
+  const settleTargetBase = coinMotion.phase === "idle" ? 1 : coinMotion.phase === "settle" ? 0.68 : 0.26;
+  const settleTarget = clamp(
+    settleTargetBase -
+      kickAccent * 0.24 -
+      Math.min(Math.abs(pizzaFieldMotion.angularVelocity), 0.55) * 0.16 -
+      Math.min(Math.abs(pizzaFieldMotion.backdropTorsion), 0.18) * 0.5,
+    0.12,
+    1
+  );
+  pizzaFieldMotion.settle = damp(pizzaFieldMotion.settle, settleTarget, 2.4, deltaSeconds);
 }
 
 function updateTraversal(deltaSeconds: number, now: number) {
@@ -3298,8 +3317,10 @@ function renderFractal(deltaSeconds: number) {
     audio.spectralFlux * 0.7 +
     pulseImpact * 0.28 +
     pulseAnticipation * 0.12;
-  const pizzaBackdropRotation = angleDelta(pizzaFieldMotion.backdropLagRotation, pizzaFieldMotion.rotation) * 1.18;
-  const pizzaBackdropTorsion = pizzaFieldMotion.backdropTorsion * 1.08;
+  const pizzaFieldExcitement = 1 - pizzaFieldMotion.settle;
+  const pizzaBackdropRotation =
+    angleDelta(pizzaFieldMotion.backdropLagRotation, pizzaFieldMotion.rotation) * (1.12 + pizzaFieldExcitement * 0.2);
+  const pizzaBackdropTorsion = pizzaFieldMotion.backdropTorsion * (1.02 + pizzaFieldExcitement * 0.28);
   const coinRadius = clamp(0.78 + coinMotion.lift * 0.08 + audio.zoom * 0.02 + pulseImpact * 0.02, 0.74, 0.94);
   const coinDepth = clamp(0.98 - coinMotion.lift * 0.34 - pulseImpact * 0.06, 0.72, 1.16);
   const coinOffset = {
