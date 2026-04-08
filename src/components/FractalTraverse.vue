@@ -15,6 +15,7 @@ import { AudioSource } from "@wearesage/shared";
 import { useViewport } from "@wearesage/vue";
 import { useAudioFeatures } from "../stores/audio-features";
 import { usePulse } from "../stores/pulse";
+import { usePizzaPresetLab } from "../stores/pizza-preset-lab";
 import { useSources } from "../stores/sources";
 import { type FractalTraverseLayoutMode, useVisualizerSettings } from "../stores/visualizer-settings";
 
@@ -74,6 +75,9 @@ uniform float uPizzaCarveStrength;
 uniform float uPizzaGrooveStrength;
 uniform float uPizzaCrustProtection;
 uniform float uPizzaValleyGlow;
+uniform vec4 uPizzaCameraRig;
+uniform vec4 uPizzaLightRig;
+uniform vec4 uPizzaMaterialRig;
 uniform vec2 uPizzaFlowOffset;
 uniform float uPizzaFlowPhase;
 uniform float uPizzaFlowStrength;
@@ -120,6 +124,8 @@ struct PizzaTerrainSample {
   float sauce;
   float glow;
   float groove;
+  float topping;
+  float toppingEdge;
 };
 
 vec2 complexPowReal(vec2 z, float power) {
@@ -143,6 +149,11 @@ vec2 rotate2d(vec2 point, float angle) {
     point.x * cosine - point.y * sine,
     point.x * sine + point.y * cosine
   );
+}
+
+vec3 directionFromAzimuthElevation(float azimuth, float elevation) {
+  float plane = cos(elevation);
+  return normalize(vec3(cos(azimuth) * plane, sin(azimuth) * plane, sin(elevation)));
 }
 
 vec3 rotateX3d(vec3 point, float angle) {
@@ -392,9 +403,34 @@ float lorenzCurveDistance(vec2 discUv) {
   return distanceToCurve;
 }
 
+vec2 samplePepperoniDisc(vec2 discUv, vec2 center, float radius) {
+  float distanceToCenter = length(discUv - center);
+  float cap = 1.0 - smoothstep(radius, radius + 0.032, distanceToCenter);
+  float edge =
+    smoothstep(radius * 0.36, radius * 0.82, distanceToCenter) *
+    (1.0 - smoothstep(radius * 0.86, radius + 0.03, distanceToCenter));
+  return vec2(cap, edge);
+}
+
+vec2 samplePepperoniPattern(vec2 discUv) {
+  vec2 patternUv = discUv + uPizzaFlowOffset * 0.08;
+  float drift = sin(uPizzaSpin * 0.04 + uPizzaMorph * 0.03) * 0.01;
+  vec2 combined = vec2(0.0);
+
+  combined = max(combined, samplePepperoniDisc(patternUv, vec2(-0.34 + drift, 0.21), 0.17));
+  combined = max(combined, samplePepperoniDisc(patternUv, vec2(0.0, 0.32 - drift * 0.4), 0.145));
+  combined = max(combined, samplePepperoniDisc(patternUv, vec2(0.34 - drift * 0.7, 0.16), 0.165));
+  combined = max(combined, samplePepperoniDisc(patternUv, vec2(-0.21, -0.17 - drift * 0.25), 0.155));
+  combined = max(combined, samplePepperoniDisc(patternUv, vec2(0.2, -0.24 + drift * 0.6), 0.18));
+  combined = max(combined, samplePepperoniDisc(patternUv, vec2(0.02 + drift * 0.4, -0.02), 0.15));
+
+  return combined;
+}
+
 PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
   PizzaTerrainSample result;
   float radius = length(discUv);
+  float toppingInfluence = clamp(uPizzaMaterialRig.w, 0.0, 1.2);
   float crustStart = clamp(uPizzaCrustProtection, 0.68, 0.92);
   float crustEnd = min(crustStart + 0.13, 1.03);
   float interiorMask = 1.0 - smoothstep(crustStart, crustEnd, radius);
@@ -468,6 +504,16 @@ PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
   float sauce = clamp(valley * 0.68 + groove * 0.24 + (1.0 - terraceBands) * 0.08 + sliceCue * 0.03 - crustMask * 0.38, 0.0, 1.0);
   float wetness = clamp(valley * 0.58 + groove * 0.42 + (1.0 - ridge) * 0.14 + contour * 0.05, 0.0, 1.0);
   float glow = valley * (0.12 + groove * 0.34 + uPizzaValleyGlow * 0.28) + groove * 0.05;
+  vec2 pepperoniPattern = samplePepperoniPattern(discUv);
+  float topping = pepperoniPattern.x * interiorMask * toppingInfluence;
+  float toppingEdge = pepperoniPattern.y * interiorMask * toppingInfluence;
+  float mesaLift = topping * (0.005 + toppingInfluence * 0.018) * (0.72 + ridge * 0.28);
+
+  height += mesaLift;
+  ridge = clamp(ridge + toppingEdge * 0.36 + topping * 0.08, 0.0, 1.0);
+  sauce = clamp(sauce - topping * 0.22, 0.0, 1.0);
+  wetness = clamp(wetness - topping * 0.14 + toppingEdge * 0.04, 0.0, 1.0);
+  glow = clamp(glow - topping * 0.03, 0.0, 1.2);
 
   result.height = height;
   result.baseHeight = baseHeight;
@@ -479,18 +525,22 @@ PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
   result.sauce = sauce;
   result.glow = glow;
   result.groove = groove;
+  result.topping = topping;
+  result.toppingEdge = toppingEdge;
   return result;
 }
 
 void pizzaCameraRay(vec2 fragCoord, out vec3 rayOrigin, out vec3 rayDirection) {
   vec2 screen = (fragCoord - uResolution * 0.5) / max(uResolution.y, 0.0001);
-  float orbit = 0.28 + sin(uPizzaSpin * 0.12 + uPizzaMorph * 0.03) * 0.09;
-  rayOrigin = vec3(sin(orbit) * 0.42 - 0.28, -1.34 + cos(orbit) * 0.14, 0.98 + sin(uPizzaMorph * 0.04) * 0.05);
-  vec3 target = vec3(0.0, -0.02, 0.01);
+  float orbit = uPizzaCameraRig.x + sin(uPizzaSpin * 0.12 + uPizzaMorph * 0.03) * 0.07;
+  float elevation = clamp(uPizzaCameraRig.y + sin(uPizzaMorph * 0.04) * 0.03, 0.28, 1.08);
+  float distance = max(uPizzaCameraRig.z + sin(uPizzaSpin * 0.06) * 0.02, 1.12);
+  vec3 target = vec3(0.0, uPizzaCameraRig.w, 0.01);
+  rayOrigin = target + vec3(cos(orbit) * cos(elevation), sin(orbit) * cos(elevation), sin(elevation)) * distance;
   vec3 forward = normalize(target - rayOrigin);
   vec3 right = normalize(cross(forward, vec3(0.0, 0.0, 1.0)));
   vec3 up = normalize(cross(right, forward));
-  rayDirection = normalize(forward * 1.56 + right * screen.x * 0.96 + up * (screen.y + 0.01));
+  rayDirection = normalize(forward * (1.48 + distance * 0.08) + right * screen.x * 0.98 + up * (screen.y + 0.01));
 }
 
 bool intersectPizzaTop(
@@ -641,19 +691,25 @@ vec3 shadePizzaBoard(vec3 point) {
 vec3 shadePizzaTopSurface(vec3 hitPosition, vec2 discUv, PizzaTerrainSample terrain, vec3 rayOrigin) {
   vec3 normal = computePizzaTopNormal(discUv, terrain);
   vec3 viewDirection = normalize(rayOrigin - hitPosition);
-  vec3 keyLightDirection = normalize(vec3(-0.82, -0.52, 0.94));
-  vec3 fillLightDirection = normalize(vec3(0.36, 0.84, 0.62));
-  vec3 rimLightDirection = normalize(vec3(0.18, -0.96, 0.38));
+  float shadingContrast = clamp(uPizzaMaterialRig.x, 0.72, 1.36);
+  float ridgeBrowning = clamp(uPizzaMaterialRig.y, 0.45, 1.3);
+  float sauceWetness = clamp(uPizzaMaterialRig.z, 0.64, 1.32);
+  float toppingInfluence = clamp(uPizzaMaterialRig.w, 0.0, 1.2);
+  float lightContrast = clamp(uPizzaLightRig.z, 0.72, 1.34);
+  float rimBoost = clamp(uPizzaLightRig.w, 0.4, 1.22);
+  vec3 keyLightDirection = directionFromAzimuthElevation(uPizzaLightRig.x, uPizzaLightRig.y);
+  vec3 fillLightDirection = directionFromAzimuthElevation(uPizzaLightRig.x + 2.18, uPizzaLightRig.y * 0.78);
+  vec3 rimLightDirection = directionFromAzimuthElevation(uPizzaLightRig.x - 1.42, 0.34 + uPizzaLightRig.y * 0.3);
   float keyLight = max(dot(normal, keyLightDirection), 0.0);
   float fillLight = max(dot(normal, fillLightDirection), 0.0);
   float rimLight = max(dot(normal, rimLightDirection), 0.0);
   float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
   float slope = 1.0 - clamp(normal.z, 0.0, 1.0);
-  float reliefContrast = clamp((terrain.height - terrain.baseHeight) / (0.012 + uPizzaCarveStrength * 0.05), -1.0, 1.0);
-  float ridgeAccent = smoothstep(0.08, 0.72, reliefContrast + terrain.ridge * 0.52 + slope * 0.18);
-  float valleyAccent = smoothstep(0.12, 0.82, -reliefContrast + terrain.valley * 0.56 + terrain.groove * 0.32);
-  float toastMask = clamp(terrain.ridge * 0.54 + ridgeAccent * 0.34 + slope * 0.52 + terrain.crustMask * 0.24, 0.0, 1.0);
-  float sauceMask = clamp(terrain.sauce * 0.72 + valleyAccent * 0.34 + terrain.groove * 0.16 - terrain.crustMask * 0.34, 0.0, 1.0);
+  float reliefContrast = clamp(((terrain.height - terrain.baseHeight) / (0.012 + uPizzaCarveStrength * 0.05)) * shadingContrast, -1.0, 1.0);
+  float ridgeAccent = smoothstep(0.06, 0.72, reliefContrast + terrain.ridge * 0.56 + slope * 0.22);
+  float valleyAccent = smoothstep(0.1, 0.82, -reliefContrast + terrain.valley * 0.6 + terrain.groove * 0.38);
+  float toastMask = clamp((terrain.ridge * 0.48 + ridgeAccent * 0.34 + slope * 0.52 + terrain.crustMask * 0.24) * (0.8 + ridgeBrowning * 0.34), 0.0, 1.0);
+  float sauceMask = clamp((terrain.sauce * 0.72 + valleyAccent * 0.34 + terrain.groove * 0.16 - terrain.crustMask * 0.34) * (0.82 + sauceWetness * 0.14), 0.0, 1.0);
   float shimmer =
     0.5 +
     0.5 *
@@ -663,42 +719,49 @@ vec3 shadePizzaTopSurface(vec3 hitPosition, vec2 discUv, PizzaTerrainSample terr
       uPizzaSpin * 0.24 +
       terrain.groove * 6.0
     );
-  float specularPower = mix(38.0, 15.0, terrain.wetness);
+  float surfaceWetness = clamp(terrain.wetness * sauceWetness + terrain.glow * 0.08, 0.0, 1.14);
+  float specularPower = mix(38.0, 12.0, clamp(surfaceWetness, 0.0, 1.0));
   float specular =
     pow(max(dot(reflect(-keyLightDirection, normal), viewDirection), 0.0), specularPower) *
-    mix(0.16, 0.88, terrain.wetness);
+    mix(0.16, 0.94, clamp(surfaceWetness, 0.0, 1.0));
   float fillSpecular =
     pow(max(dot(reflect(-fillLightDirection, normal), viewDirection), 0.0), 22.0) *
-    terrain.wetness *
+    clamp(surfaceWetness, 0.0, 1.0) *
     0.16;
-  float cavity = clamp(1.0 - valleyAccent * 0.32 - terrain.groove * 0.1, 0.52, 1.0);
+  float cavity = clamp(1.0 - valleyAccent * (0.24 + shadingContrast * 0.1) - terrain.groove * 0.1, 0.48, 1.0);
   vec3 cheeseColor = mix(vec3(0.84, 0.66, 0.32), vec3(0.98, 0.87, 0.54), 0.24 + terrain.ridge * 0.16);
   vec3 brownedCheese = vec3(0.58, 0.29, 0.08);
   vec3 sauceColor = mix(vec3(0.48, 0.1, 0.06), vec3(0.84, 0.28, 0.11), 0.26 + terrain.groove * 0.3 + terrain.glow * 0.22);
   vec3 crustColor = mix(vec3(0.76, 0.53, 0.24), vec3(0.9, 0.72, 0.4), terrain.crustMask * 0.32 + terrain.ridge * 0.08);
+  vec3 pepperoniColor = mix(vec3(0.54, 0.1, 0.05), vec3(0.76, 0.2, 0.08), 0.32 + shimmer * 0.12 + terrain.toppingEdge * 0.22);
+  vec3 pepperoniFat = vec3(0.96, 0.44, 0.16);
   vec3 baseColor = mix(cheeseColor, sauceColor, sauceMask);
 
-  baseColor = mix(baseColor, brownedCheese, toastMask * 0.44);
+  baseColor = mix(baseColor, brownedCheese, toastMask * (0.34 + ridgeBrowning * 0.16));
   baseColor = mix(baseColor, crustColor, terrain.crustMask * 0.88);
+  baseColor = mix(baseColor, pepperoniColor, terrain.topping * (0.62 + toppingInfluence * 0.18));
+  baseColor = mix(baseColor, pepperoniColor * 0.74, terrain.toppingEdge * 0.18);
   baseColor *= cavity;
 
   vec3 litColor =
     baseColor * (0.12 + normal.z * 0.18) +
-    baseColor * vec3(1.04, 0.98, 0.9) * keyLight * 0.78 +
-    baseColor * vec3(0.56, 0.38, 0.22) * fillLight * 0.28 +
-    baseColor * vec3(0.42, 0.24, 0.14) * rimLight * 0.16;
+    baseColor * vec3(1.04, 0.98, 0.9) * keyLight * (0.64 + lightContrast * 0.18) +
+    baseColor * vec3(0.56, 0.38, 0.22) * fillLight * (0.18 + lightContrast * 0.12) +
+    baseColor * vec3(0.42, 0.24, 0.14) * rimLight * (0.08 + rimBoost * 0.12);
   litColor += vec3(1.0, 0.84, 0.58) * (specular + fillSpecular);
-  litColor += brownedCheese * ridgeAccent * 0.08;
-  litColor += sauceColor * valleyAccent * (0.06 + 0.12 * uPizzaValleyGlow) * (0.35 + shimmer * 0.65);
-  litColor += sauceColor * fresnel * terrain.wetness * 0.06;
+  litColor += brownedCheese * ridgeAccent * (0.06 + ridgeBrowning * 0.04);
+  litColor += sauceColor * valleyAccent * (0.05 + 0.14 * uPizzaValleyGlow) * (0.32 + shimmer * 0.68);
+  litColor += sauceColor * fresnel * surfaceWetness * 0.06;
+  litColor += pepperoniFat * terrain.topping * (0.04 + specular * 0.12);
 
   return pow(litColor, vec3(0.94));
 }
 
 vec3 shadePizzaSideSurface(vec3 hitPosition, vec3 hitNormal, vec3 rayOrigin) {
   vec3 viewDirection = normalize(rayOrigin - hitPosition);
-  vec3 keyLightDirection = normalize(vec3(-0.82, -0.52, 0.94));
-  vec3 fillLightDirection = normalize(vec3(0.36, 0.84, 0.62));
+  float ridgeBrowning = clamp(uPizzaMaterialRig.y, 0.45, 1.3);
+  vec3 keyLightDirection = directionFromAzimuthElevation(uPizzaLightRig.x, uPizzaLightRig.y);
+  vec3 fillLightDirection = directionFromAzimuthElevation(uPizzaLightRig.x + 2.18, uPizzaLightRig.y * 0.78);
   float keyLight = max(dot(hitNormal, keyLightDirection), 0.0);
   float fillLight = max(dot(hitNormal, fillLightDirection), 0.0);
   float rim = pow(1.0 - max(dot(hitNormal, viewDirection), 0.0), 2.4);
@@ -707,11 +770,11 @@ vec3 shadePizzaSideSurface(vec3 hitPosition, vec3 hitNormal, vec3 rayOrigin) {
     0.5 +
     0.5 *
     sin(atan(hitPosition.y, hitPosition.x) * 8.0 + sideHeight * 14.0 + uPizzaMorph * 0.14 + uPizzaSpin * 0.1);
-  vec3 crustColor = mix(vec3(0.56, 0.34, 0.14), vec3(0.86, 0.68, 0.38), 0.3 + toastBands * 0.28);
+  vec3 crustColor = mix(vec3(0.56, 0.34, 0.14), vec3(0.86, 0.68, 0.38), 0.28 + toastBands * 0.24 + ridgeBrowning * 0.06);
   crustColor = mix(crustColor, vec3(0.42, 0.2, 0.08), smoothstep(0.62, 1.0, sideHeight) * 0.16);
   vec3 litColor =
     crustColor * (0.16 + keyLight * 0.9 + fillLight * 0.18) +
-    vec3(1.0, 0.82, 0.56) * rim * (0.08 + sideHeight * 0.06);
+    vec3(1.0, 0.82, 0.56) * rim * (0.06 + uPizzaLightRig.w * 0.04 + sideHeight * 0.06);
   return pow(litColor, vec3(0.96));
 }
 
@@ -1759,6 +1822,9 @@ type FractalUniforms = {
   pizzaGrooveStrength: WebGLUniformLocation | null;
   pizzaCrustProtection: WebGLUniformLocation | null;
   pizzaValleyGlow: WebGLUniformLocation | null;
+  pizzaCameraRig: WebGLUniformLocation | null;
+  pizzaLightRig: WebGLUniformLocation | null;
+  pizzaMaterialRig: WebGLUniformLocation | null;
   pizzaFlowOffset: WebGLUniformLocation | null;
   pizzaFlowPhase: WebGLUniformLocation | null;
   pizzaFlowStrength: WebGLUniformLocation | null;
@@ -2425,6 +2491,7 @@ const interest = createInterestState();
 const fractalMutation = createFractalMutationState();
 const coinMotion = createCoinMotionState();
 const pizzaFieldMotion = createPizzaFieldMotionState();
+const pizzaPresetLab = usePizzaPresetLab();
 const reusableInterestSample: MutableFractalSample = {
   escaped: false,
   smooth: 0,
@@ -2440,10 +2507,6 @@ const visible = computed(() => {
   return settings.visualizationMode === "fractal-traverse" && sources.source !== null && sources.source !== AudioSource.NONE;
 });
 
-const strength = computed(() => {
-  return clamp(Number(settings.fractalTraverseStrength) || 0.84, 0.35, 1.35);
-});
-
 const fractalLayoutMode = computed<FractalTraverseLayoutMode>(() => {
   return settings.fractalTraverseLayoutMode ?? "full-frame";
 });
@@ -2454,6 +2517,14 @@ const isPizzaLayout = computed(() => {
 
 const isCoinLayout = computed(() => {
   return fractalLayoutMode.value === "pizza-coin";
+});
+
+const strength = computed(() => {
+  if (isPizzaLayout.value) {
+    return clamp(pizzaPresetLab.currentLook.fractalStrength, 0.35, 1.35);
+  }
+
+  return clamp(Number(settings.fractalTraverseStrength) || 0.84, 0.35, 1.35);
 });
 
 const pizzaSliceCount = computed(() => {
@@ -3070,6 +3141,9 @@ function ensureRenderer() {
     pizzaGrooveStrength: context.getUniformLocation(fractalProgram, "uPizzaGrooveStrength"),
     pizzaCrustProtection: context.getUniformLocation(fractalProgram, "uPizzaCrustProtection"),
     pizzaValleyGlow: context.getUniformLocation(fractalProgram, "uPizzaValleyGlow"),
+    pizzaCameraRig: context.getUniformLocation(fractalProgram, "uPizzaCameraRig"),
+    pizzaLightRig: context.getUniformLocation(fractalProgram, "uPizzaLightRig"),
+    pizzaMaterialRig: context.getUniformLocation(fractalProgram, "uPizzaMaterialRig"),
     pizzaFlowOffset: context.getUniformLocation(fractalProgram, "uPizzaFlowOffset"),
     pizzaFlowPhase: context.getUniformLocation(fractalProgram, "uPizzaFlowPhase"),
     pizzaFlowStrength: context.getUniformLocation(fractalProgram, "uPizzaFlowStrength"),
@@ -4101,6 +4175,9 @@ function renderFractal(deltaSeconds: number) {
   const currentPoi = family.pointsOfInterest[traversal.currentIndex];
   const nextPoi = family.pointsOfInterest[traversal.nextIndex];
   const pizzaSymmetry = getPizzaSymmetryState();
+  const pizzaLook = pizzaPresetLab.currentLook;
+  const pizzaCameraRig = pizzaPresetLab.currentCamera;
+  const pizzaLightingRig = pizzaPresetLab.currentLighting;
   const pulseImpact = pulse.impact * pulse.confidence;
   const pulseAnticipation = pulse.anticipation * pulse.confidence;
   const pulseGlow = pulseImpact * 0.9 + pulseAnticipation * 0.4;
@@ -4209,15 +4286,21 @@ function renderFractal(deltaSeconds: number) {
   });
   const coinShimmer = clamp(0.16 + coinMotion.shimmer * 0.72 + audio.highDrive * 0.08 + pulseGlow * 0.04, 0.16, 0.98);
   const pizzaCarveStrength = isPizzaLayout.value
-    ? clamp((Number(settings.fractalTraversePizzaCarveDepth) || 1) * (0.94 + audio.bassDrive * 0.08 + pulseImpact * 0.06), 0.45, 1.7)
+    ? clamp(pizzaLook.carveDepth * (0.94 + audio.bassDrive * 0.08 + pulseImpact * 0.06), 0.45, 1.7)
     : 0;
   const pizzaGrooveStrength = isPizzaLayout.value
-    ? clamp((Number(settings.fractalTraversePizzaGrooveStrength) || 0.72) * (0.94 + audio.highDrive * 0.06 + pulseAnticipation * 0.04), 0.12, 1.4)
+    ? clamp(pizzaLook.grooveStrength * (0.94 + audio.highDrive * 0.06 + pulseAnticipation * 0.04), 0.12, 1.4)
     : 0;
-  const pizzaCrustProtection = clamp(Number(settings.fractalTraversePizzaCrustProtection) || 0.82, 0.68, 0.92);
+  const pizzaCrustProtection = clamp(pizzaLook.crustProtection, 0.68, 0.92);
   const pizzaValleyGlow = isPizzaLayout.value
-    ? clamp((Number(settings.fractalTraversePizzaValleyGlow) || 0.38) * (0.92 + audio.palette * 0.08 + pulseGlow * 0.08), 0, 1.1)
+    ? clamp(pizzaLook.valleyGlow * (0.92 + audio.palette * 0.08 + pulseGlow * 0.08), 0, 1.1)
     : 0;
+  const pizzaMaterialRig = {
+    shadingContrast: clamp(pizzaLook.shadingContrast, 0.72, 1.36),
+    ridgeBrowning: clamp(pizzaLook.ridgeBrowning, 0.45, 1.3),
+    sauceWetness: clamp(pizzaLook.sauceWetness, 0.64, 1.32),
+    toppingInfluence: clamp(pizzaLook.toppingInfluence, 0, 1.2),
+  };
 
   if (
     !ensureRenderTarget(gl, renderState.currentTarget, currentWidth, currentHeight, gl.LINEAR) ||
@@ -4279,6 +4362,27 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.pizzaGrooveStrength, pizzaGrooveStrength);
   gl.uniform1f(fractalUniforms.pizzaCrustProtection, pizzaCrustProtection);
   gl.uniform1f(fractalUniforms.pizzaValleyGlow, pizzaValleyGlow);
+  gl.uniform4f(
+    fractalUniforms.pizzaCameraRig,
+    pizzaCameraRig.orbit,
+    pizzaCameraRig.elevation,
+    pizzaCameraRig.distance,
+    pizzaCameraRig.targetY
+  );
+  gl.uniform4f(
+    fractalUniforms.pizzaLightRig,
+    pizzaLightingRig.rotation,
+    pizzaLightingRig.elevation,
+    pizzaLightingRig.contrast,
+    pizzaLightingRig.rim
+  );
+  gl.uniform4f(
+    fractalUniforms.pizzaMaterialRig,
+    pizzaMaterialRig.shadingContrast,
+    pizzaMaterialRig.ridgeBrowning,
+    pizzaMaterialRig.sauceWetness,
+    pizzaMaterialRig.toppingInfluence
+  );
   gl.uniform2f(fractalUniforms.pizzaFlowOffset, pizzaFieldMotion.flowOffsetX, pizzaFieldMotion.flowOffsetY);
   gl.uniform1f(fractalUniforms.pizzaFlowPhase, pizzaFlowPhase);
   gl.uniform1f(fractalUniforms.pizzaFlowStrength, pizzaFlowStrength);
@@ -4356,6 +4460,7 @@ function animate(now: number) {
   const deltaSeconds = clamp((now - lastFrameTime) / 1000, 1 / 120, 0.08);
   lastFrameTime = now;
 
+  pizzaPresetLab.step(now);
   updateAudioResponse(deltaSeconds);
   updateCoinMotion(deltaSeconds, now);
   updatePizzaFieldMotion(deltaSeconds, now);

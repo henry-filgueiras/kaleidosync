@@ -17,6 +17,7 @@
     </Transition>
 
     <FractalTraverse v-if="settings.visualizationMode === 'fractal-traverse'" />
+    <PizzaPresetHud v-if="settings.visualizationMode === 'fractal-traverse' && !showSources && !ui.showShaderScroll" />
     <PulseOverlay />
     <BeatHorizon />
     <PrismVeil />
@@ -30,7 +31,7 @@ import { useMagicKeys } from "@vueuse/core";
 import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
 import { RAW_AUDIO_NOISE_FLOOR_DB, rawLevelToDecibels, sampleRawAnalyserLevel } from "../audio-level";
-import { Menu, AudioSources, AudioDebugMeter, BeatHorizon, FractalTraverse, PrismVeil, PulseOverlay } from "../components";
+import { Menu, AudioSources, AudioDebugMeter, BeatHorizon, FractalTraverse, PizzaPresetHud, PrismVeil, PulseOverlay } from "../components";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
 import { useRouter } from "../sage-router-pages";
 import { useSources } from "../stores/sources";

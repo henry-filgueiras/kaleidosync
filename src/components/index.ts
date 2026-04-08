@@ -6,5 +6,6 @@ export { default as FractalTraverse } from "./FractalTraverse.vue";
 export { default as Menu } from "./Menu.vue";
 export { default as MenuHeader } from "./MenuHeader.vue";
 export { default as PulseOverlay } from "./PulseOverlay.vue";
+export { default as PizzaPresetHud } from "./PizzaPresetHud.vue";
 export { default as PrismVeil } from "./PrismVeil.vue";
 export { default as Renderer } from "./Renderer.vue";
