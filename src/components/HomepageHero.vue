@@ -6,16 +6,18 @@
       <span><strong>LOOKS like</strong> </span>
     </Row>
 
-    <Link :to="`/visualizer`"> GET STARTED </Link>
+    <button type="button" @click="router.push('/visualizer')">GET STARTED</button>
   </Column>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted } from "vue";
-import { Column, Row, pause, randomNumber, useViewport, useAnimation, Link, useDevice } from "@wearesage/vue";
+import { Column, Row, pause, randomNumber, useViewport, useAnimation, useDevice } from "@wearesage/vue";
+import { useRouter } from "../sage-router-pages";
 
 const device = useDevice();
 const viewport = useViewport();
+const router = useRouter();
 const typed = ref(["Spotify", "Audius", "Radio Paradise", "your voice"]);
 const activeIndex = ref(0);
 const visible = ref("");

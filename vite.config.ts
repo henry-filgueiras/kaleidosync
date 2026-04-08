@@ -1,21 +1,71 @@
+import { resolve as pathResolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { defineConfig } from "vite";
 import { createSageConfig } from "@wearesage/vue/vite";
 import { config } from "dotenv";
 
-config();
+config({ quiet: true });
+config({ path: ".env.local", override: true, quiet: true });
+
+function normalizeBasePath(basePath?: string) {
+  if (!basePath || basePath.trim() === "") {
+    return "/";
+  }
+
+  const withLeadingSlash = basePath.startsWith("/") ? basePath : `/${basePath}`;
+  return withLeadingSlash.endsWith("/") ? withLeadingSlash : `${withLeadingSlash}/`;
+}
+
+async function loadSageRouterPlugin() {
+  const moduleUrl = pathToFileURL(
+    pathResolve(__dirname, "node_modules/@wearesage/vue/dist/router/vite-plugin-sage-router.js")
+  ).href;
+  const { sageRouter } = await import(moduleUrl);
+
+  return sageRouter({
+    pagesDir: "src/pages",
+    outputFile: "src/routes.generated.ts",
+  });
+}
 
 // Pure magic - one function call!
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
   const baseConfig = await createSageConfig({
-    router: true
+    apiProxy: {
+      target: process.env.VITE_API_BASE_URL || "http://127.0.0.1:3001"
+    }
   });
+  const routerPlugin = await loadSageRouterPlugin();
+  const basePath = normalizeBasePath(process.env.VITE_PUBLIC_BASE);
 
-  // Fix dayjs ES module issue from AppKit - merge configs properly
+  const include = [
+    ...(baseConfig.optimizeDeps?.include || []).filter(dep => dep !== "phone"),
+    "dayjs",
+    "dayjs/locale/en",
+    "dayjs/esm/locale/en",
+    "music-metadata",
+    "socket.io-client",
+    "engine.io-client",
+    "socket.io-parser",
+    "debug",
+    "content-type",
+    "media-typer",
+    "ieee754"
+  ];
+  const needsInterop = [...(baseConfig.optimizeDeps?.needsInterop || []), "debug", "content-type", "media-typer", "ieee754"];
+
   return {
     ...baseConfig,
+    base: command === "build" ? basePath : "/",
+    plugins: [routerPlugin, ...(baseConfig.plugins || [])],
+    define: {
+      ...(baseConfig.define || {}),
+      "import.meta.env.VITE_API": JSON.stringify(process.env.VITE_API ?? "")
+    },
     optimizeDeps: {
       ...baseConfig.optimizeDeps,
-      include: [...(baseConfig.optimizeDeps?.include || []), "dayjs", "dayjs/locale/en", "dayjs/esm/locale/en"]
+      include: [...new Set(include)],
+      needsInterop: [...new Set(needsInterop)]
     }
   };
 });

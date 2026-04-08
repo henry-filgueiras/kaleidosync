@@ -29,11 +29,16 @@
         <IconButton icon="radio-paradise" @click="toggleRadioParadise" label="Radio Paradise" />
         <IconButton icon="kexp" @click="$emit('select-source', AudioSource.KEXP)" label="KEXP" />
         <IconButton icon="microphone" @click="$emit('select-source', AudioSource.MICROPHONE)" label="Microphone" />
+        <IconButton icon="sound" @click="$emit('select-source', AudioSource.BROWSER_AUDIO)" label="Browser Audio" />
 
         <span class="file-container">
           <IconButton icon="upload" label="File" />
           <input ref="fileInput" type="file" multiple accept="audio/*" @change="handleFileSelect" />
         </span>
+
+        <p class="source-tip">
+          Browser Audio captures shared tab or screen audio. For the native Spotify macOS app, route audio through BlackHole or Loopback and keep using Microphone mode.
+        </p>
       </nav>
     </Transition>
   </div>
@@ -41,9 +46,10 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
-import { Column, IconButton, useSources } from "@wearesage/vue";
+import { Column, IconButton } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
 import MenuHeader from "./MenuHeader.vue";
+import { useSources } from "../stores/sources";
 
 const emit = defineEmits(["select-source", "close", "select-radio-paradise"]);
 
@@ -139,5 +145,13 @@ nav div {
     @include position(absolute, 0 0 0 0, 10);
     opacity: 0;
   }
+}
+
+.source-tip {
+  @include box(0.75 0.25 0 0.25);
+  max-width: 18rem;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  opacity: 0.8;
 }
 </style>

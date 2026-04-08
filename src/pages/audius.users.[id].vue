@@ -13,6 +13,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
 import {
   View,
   Row,
@@ -22,13 +23,13 @@ import {
   AudiusTrackList,
   AudiusPlaylists,
   useGetAudiusUserByHandle,
-  useRouteParamId,
-  useTabs,
-  useRouter
+  useTabs
 } from "@wearesage/vue";
+import { useRoute, useRouter } from "../sage-router-pages";
 
 const router = useRouter();
-const user = useGetAudiusUserByHandle(useRouteParamId());
+const route = useRoute();
+const user = useGetAudiusUserByHandle(computed(() => route.value.params.id || ""));
 const { tabs, activeTab, selectTab } = useTabs(["Tracks", "Playlists", "Albums"]);
 
 function viewPlaylist({ id }: { id: string }) {

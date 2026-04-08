@@ -46,11 +46,11 @@ import {
   useSketches,
   usePopover,
   useToast,
-  useRouter,
   isValidGLSLVariableName,
   Variants,
   Uniforms
 } from "@wearesage/vue";
+import { useRouter } from "../sage-router-pages";
 
 // Lazy load the editor - only loads when component is actually rendered
 const ShaderEditor = defineAsyncComponent(() => 

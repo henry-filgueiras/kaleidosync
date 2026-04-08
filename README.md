@@ -10,6 +10,115 @@
 
 Since then, moving beyond the Echo Nest: I've developed a suite of tooling for _realtime_ audio analysis, right in the browser: on **any** device.
 
+## Local development
+
+### npm
+
+```bash
+./setup.sh
+npm run api
+npm run dev
+```
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+API-backed features such as Spotify and Audius use the local `/api` proxy by default.
+Point `VITE_API_BASE_URL` at the separate backend service before testing those flows.
+
+For audio-reactive visuals, there are now two practical local capture paths:
+
+- `Browser Audio` captures a shared tab or screen with audio. This is the easiest option when Spotify is playing in the browser.
+- `Microphone` still works for real input devices, including virtual loopback devices.
+
+On macOS, the native Spotify desktop app does not appear as a browser capture source. To visualize that output without room noise, route Spotify into a virtual input such as BlackHole or Loopback, then choose `Microphone` inside KaleidoSync.
+
+To install the free BlackHole path and open the right macOS tool:
+
+```bash
+./setup-blackhole.sh
+```
+
+For Spotify locally:
+
+1. Copy [`./.env.local.example`](./.env.local.example) to `.env.local`.
+2. Fill in `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, and keep `SPOTIFY_REDIRECT_URI=http://127.0.0.1:3001/api/spotify/callback`.
+3. In the Spotify Developer Dashboard, register that exact redirect URI.
+4. Use `http://127.0.0.1:5173` instead of `localhost` for the frontend URL.
+
+### Bazel
+
+```bash
+bazel run //:setup
+bazel run //:api
+bazel run //:dev
+```
+
+### Docker
+
+Bring up the full Docker-managed local stack in one command:
+
+```bash
+bazel run //:docker_up
+```
+
+That starts three services:
+
+- `api` on `http://127.0.0.1:3001`
+- `dev` on `http://127.0.0.1:5173`
+- `start` on `http://127.0.0.1:2223`
+
+If you prefer the compose wrapper directly:
+
+```bash
+./tools/docker/compose.sh up --build --detach --remove-orphans
+```
+
+The wrapper auto-detects `docker compose` and classic `docker-compose`.
+It also expects a running Docker daemon or runtime such as Docker Desktop, OrbStack, or Colima.
+
+To stop the stack:
+
+```bash
+bazel run //:docker_down
+```
+
+The compose wrapper reads `.env` and `.env.local` if present, so local Spotify secrets still stay in `.env.local`.
+`dev` uses the internal Docker network to proxy `/api` to the `api` service, while `start` serves the production build and proxies `/api` the same way.
+
+Native Spotify app path on macOS:
+
+```bash
+bazel run //:setup_blackhole
+bazel run //:dev_blackhole
+```
+
+Additional Bazel targets:
+
+- `bazel run //:api`
+- `bazel run //:build`
+- `bazel run //:start`
+- `bazel run //:setup_blackhole`
+- `bazel run //:dev_blackhole`
+- `bazel run //:start_blackhole`
+- `bazel run //:docker_up`
+- `bazel run //:docker_down`
+
+`bazel run //:start` serves the built frontend on port `2223` and proxies `/api/*` to `VITE_API_BASE_URL`.
+
+## GitHub Pages deployment
+
+This app can be deployed to GitHub Pages as a static frontend for the repo-scoped site at `/kaleidosync/`.
+GitHub Pages only hosts the built frontend, so any backend or API must be hosted separately.
+
+Required GitHub setting:
+
+- `Settings -> Pages -> Source: GitHub Actions`
+
+Build-time production variables can be set in `Settings -> Secrets and variables -> Actions -> Variables`, or in the `github-pages` environment if you want environment-scoped values.
+Use `VITE_API` for the public frontend-facing API base URL, and `VITE_API_BASE_URL` if your build or proxy configuration also needs a backend origin.
+
+The Pages workflow also publishes a `404.html` SPA fallback so direct deep links under `/kaleidosync/` resolve back into the client-side app.
+
 ## Changelog
 
 #### Version 10.0

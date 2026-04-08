@@ -46,14 +46,15 @@ import {
   SketchMesh,
   useRAF,
   useSketches,
-  useSources,
   useAnimation,
   useViewport,
   useDevice,
   useShaderErrorDetection,
-  useRoute,
   useUI
 } from "@wearesage/vue";
+import { useRoute } from "../sage-router-pages";
+import { useSources } from "../stores/sources";
+import { useVisualizerSettings } from "../stores/visualizer-settings";
 
 const raf = useRAF();
 const sketches = useSketches();
@@ -61,6 +62,7 @@ const sources = useSources();
 const route = useRoute();
 const device = useDevice();
 const ui = useUI();
+const settings = useVisualizerSettings();
 const viewport = useViewport();
 const width = computed(() => viewport.width);
 const height = computed(() => viewport.height);
@@ -70,12 +72,16 @@ const sketch = shallowRef();
 const scroll = shallowRef();
 const { error, setup, isSetup } = useShaderErrorDetection(toRef(sketches.shader));
 const renderIndex = ref(0);
+const showClassicRenderer = computed(() => {
+  return route.value.path !== "/visualizer" || settings.visualizationMode === "classic" || ui.showShaderScroll;
+});
 
 const styles = computed(() => {
   return {
     width: width.value + "px",
     height: height.value + "px",
-    opacity: 1
+    opacity: showClassicRenderer.value ? 1 : 0,
+    pointerEvents: showClassicRenderer.value ? "auto" : "none"
   };
 });
 
@@ -108,6 +114,7 @@ function selectSketch(s: any) {
 
 useAnimation(now => {
   if (!context.value?.context) return;
+  if (!showClassicRenderer.value) return;
   const { renderer, scene, camera } = context.value?.context;
   if (!isSetup.value && route.value.path === "/design") setup(renderer.value);
   sketch.value?.update?.(now);
