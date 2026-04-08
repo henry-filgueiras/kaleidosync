@@ -105,6 +105,20 @@ Additional Bazel targets:
 
 `bazel run //:start` serves the built frontend on port `2223` and proxies `/api/*` to `VITE_API_BASE_URL`.
 
+## GitHub Pages deployment
+
+This app can be deployed to GitHub Pages as a static frontend for the repo-scoped site at `/kaleidosync/`.
+GitHub Pages only hosts the built frontend, so any backend or API must be hosted separately.
+
+Required GitHub setting:
+
+- `Settings -> Pages -> Source: GitHub Actions`
+
+Build-time production variables can be set in `Settings -> Secrets and variables -> Actions -> Variables`, or in the `github-pages` environment if you want environment-scoped values.
+Use `VITE_API` for the public frontend-facing API base URL, and `VITE_API_BASE_URL` if your build or proxy configuration also needs a backend origin.
+
+The Pages workflow also publishes a `404.html` SPA fallback so direct deep links under `/kaleidosync/` resolve back into the client-side app.
+
 ## Changelog
 
 #### Version 10.0
