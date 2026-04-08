@@ -16,49 +16,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed } from "vue";
 import { AudioSource } from "@wearesage/shared";
-import { useSpotify } from "@wearesage/vue/stores/spotify";
 import { useSources } from "../stores/sources";
+import { usePulse } from "../stores/pulse";
 import { useVisualizerSettings } from "../stores/visualizer-settings";
 
 const sources = useSources();
-const spotify = useSpotify();
+const pulse = usePulse();
 const settings = useVisualizerSettings();
-
-const impact = ref(0);
-const anticipation = ref(0);
-const confidence = ref(0);
-const phase = ref(0);
-const hue = ref(184);
-const estimatedIntervalMs = ref(0);
-const lastImpactAt = ref(0);
-const lastHeuristicBeatAt = ref(0);
-const heuristicIntervals = ref<number[]>([]);
-const fastLogVolume = ref(0);
-const slowLogVolume = ref(0);
-const noveltyHistory = ref<number[]>([]);
-const lastNoveltyResponse = ref(0);
-const spotifyBeatIndex = ref(0);
-const lastSpotifyTrackId = ref("");
-const lastSpotifyBeatKey = ref("");
-
-type BeatEntry = {
-  start: number | string;
-  duration?: number | string;
-};
-
-type SpotifyBeatAnalysis = {
-  audioAnalysis?: {
-    beats?: BeatEntry[];
-  };
-  track?: {
-    timestamp?: number | string;
-    item?: {
-      id?: string;
-    };
-  };
-};
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -73,236 +39,37 @@ const strength = computed(() => {
 });
 
 const intensity = computed(() => {
-  return clamp((impact.value * 1.2 + anticipation.value * 0.92 + confidence.value * 0.14) * strength.value, 0, 1.55);
+  return clamp((pulse.impact * 1.2 + pulse.anticipation * 0.92 + pulse.confidence * 0.14) * strength.value, 0, 1.55);
+});
+
+const hue = computed(() => {
+  const stream = Math.max(0, Number(sources.stream) || 0);
+  return (176 + stream * 160 + pulse.anticipation * 64 + pulse.impact * 22) % 360;
 });
 
 const horizonStyles = computed(() => {
   const sweepWidth = 14 + intensity.value * 18;
-  const wingWidth = 10 + anticipation.value * 28 * strength.value;
-  const flashSize = 12 + impact.value * 26 * strength.value;
-  const ringSize = 18 + (impact.value + anticipation.value * 0.4) * 34 * strength.value;
-  const currentHue = Math.round(hue.value % 360);
+  const wingWidth = 10 + pulse.anticipation * 28 * strength.value;
+  const flashSize = 12 + pulse.impact * 26 * strength.value;
+  const ringSize = 18 + (pulse.impact + pulse.anticipation * 0.4) * 34 * strength.value;
+  const currentHue = Math.round(hue.value);
   const accentHue = Math.round((hue.value + 58) % 360);
 
   return {
     "--beat-hue": String(currentHue),
     "--beat-hue-accent": String(accentHue),
-    "--beat-opacity": (0.16 + confidence.value * 0.3 + intensity.value * 0.12).toFixed(3),
-    "--beat-lane-opacity": (0.08 + confidence.value * 0.22 + anticipation.value * 0.36).toFixed(3),
-    "--beat-phase-pct": `${(phase.value * 100).toFixed(1)}%`,
+    "--beat-opacity": (0.16 + pulse.confidence * 0.3 + intensity.value * 0.12).toFixed(3),
+    "--beat-lane-opacity": (0.08 + pulse.confidence * 0.22 + pulse.anticipation * 0.36).toFixed(3),
+    "--beat-confidence": pulse.confidence.toFixed(3),
+    "--beat-phase-pct": `${(pulse.phase * 100).toFixed(1)}%`,
     "--beat-sweep-width": `${sweepWidth.toFixed(1)}vw`,
     "--beat-wing-width": `${wingWidth.toFixed(1)}vw`,
     "--beat-flash-size": `${flashSize.toFixed(1)}vw`,
     "--beat-ring-size": `${ringSize.toFixed(1)}vw`,
-    "--beat-core-opacity": (impact.value * 0.7 + anticipation.value * 0.18).toFixed(3),
-    "--beat-ring-opacity": (impact.value * 0.32 + anticipation.value * 0.25).toFixed(3),
-    "--beat-ring-scale": (0.82 + impact.value * 0.62 + anticipation.value * 0.14).toFixed(3),
+    "--beat-core-opacity": (pulse.impact * 0.7 + pulse.anticipation * 0.18).toFixed(3),
+    "--beat-ring-opacity": (pulse.impact * 0.32 + pulse.anticipation * 0.25).toFixed(3),
+    "--beat-ring-scale": (0.82 + pulse.impact * 0.62 + pulse.anticipation * 0.14).toFixed(3),
   };
-});
-
-watch(
-  () => [visible.value, sources.source],
-  () => {
-    resetBeatState();
-  }
-);
-
-function resetBeatState() {
-  impact.value = 0;
-  anticipation.value = 0;
-  confidence.value = 0;
-  phase.value = 0;
-  estimatedIntervalMs.value = 0;
-  lastImpactAt.value = 0;
-  lastHeuristicBeatAt.value = 0;
-  heuristicIntervals.value = [];
-  fastLogVolume.value = 0;
-  slowLogVolume.value = 0;
-  noveltyHistory.value = [];
-  lastNoveltyResponse.value = 0;
-  spotifyBeatIndex.value = 0;
-  lastSpotifyBeatKey.value = "";
-}
-
-function getBeatDurationMs(beats: BeatEntry[], index: number) {
-  const beat = beats[index];
-  const nextBeat = beats[index + 1];
-  const explicitDuration = Number(beat?.duration) * 1000;
-
-  if (Number.isFinite(explicitDuration) && explicitDuration > 0) {
-    return explicitDuration;
-  }
-
-  if (nextBeat) {
-    return Math.max(180, (Number(nextBeat.start) - Number(beat.start)) * 1000);
-  }
-
-  return 500;
-}
-
-function registerImpact(now: number, intervalMs?: number) {
-  lastImpactAt.value = now;
-  impact.value = 1;
-
-  if (intervalMs && Number.isFinite(intervalMs) && intervalMs >= 180 && intervalMs <= 1600) {
-    estimatedIntervalMs.value = intervalMs;
-  }
-}
-
-function updateImpact(now: number) {
-  if (!lastImpactAt.value) {
-    impact.value = 0;
-    return;
-  }
-
-  impact.value = clamp(1 - (now - lastImpactAt.value) / 520, 0, 1);
-}
-
-function updateSpotifyBeat(now: number) {
-  if (sources.source !== AudioSource.SPOTIFY || !spotify.playing) return false;
-
-  const analysis = spotify.analysisData as SpotifyBeatAnalysis | null;
-  const beats = analysis?.audioAnalysis?.beats;
-  const timestamp = Number(analysis?.track?.timestamp);
-  const trackId = String(analysis?.track?.item?.id || "");
-
-  if (!Array.isArray(beats) || beats.length === 0 || !Number.isFinite(timestamp) || !trackId) {
-    return false;
-  }
-
-  if (lastSpotifyTrackId.value !== trackId) {
-    lastSpotifyTrackId.value = trackId;
-    spotifyBeatIndex.value = 0;
-    lastSpotifyBeatKey.value = "";
-  }
-
-  const positionMs = now - timestamp;
-  if (positionMs < 0) return false;
-
-  let index = spotifyBeatIndex.value;
-
-  while (index > 0 && positionMs < Number(beats[index].start) * 1000) {
-    index--;
-  }
-
-  while (index < beats.length - 1 && positionMs >= Number(beats[index].start) * 1000 + getBeatDurationMs(beats, index)) {
-    index++;
-  }
-
-  spotifyBeatIndex.value = index;
-
-  const beatStartMs = Number(beats[index].start) * 1000;
-  const beatDurationMs = getBeatDurationMs(beats, index);
-  const beatKey = `${trackId}:${index}`;
-
-  if (beatKey !== lastSpotifyBeatKey.value) {
-    lastSpotifyBeatKey.value = beatKey;
-    registerImpact(now, beatDurationMs);
-  }
-
-  phase.value = clamp((positionMs - beatStartMs) / beatDurationMs, 0, 1);
-  anticipation.value = Math.pow(clamp((phase.value - 0.56) / 0.44, 0, 1), 1.35);
-  confidence.value = 1;
-
-  return true;
-}
-
-function updateHeuristicBeat(now: number) {
-  const volume = clamp(Number(sources.volume) || 0, 0, 1);
-  const logVolume = Math.log1p(volume * 48) / Math.log1p(48);
-  const fastAlpha = 0.34;
-  const slowAlpha = 0.08;
-
-  fastLogVolume.value += (logVolume - fastLogVolume.value) * fastAlpha;
-  slowLogVolume.value += (logVolume - slowLogVolume.value) * slowAlpha;
-
-  const novelty = Math.max(0, fastLogVolume.value - slowLogVolume.value);
-
-  noveltyHistory.value.push(novelty);
-  if (noveltyHistory.value.length > 32) {
-    noveltyHistory.value.splice(0, noveltyHistory.value.length - 32);
-  }
-
-  const noveltyMean =
-    noveltyHistory.value.length > 0
-      ? noveltyHistory.value.reduce((sum, value) => sum + value, 0) / noveltyHistory.value.length
-      : novelty;
-  const noveltyDeviation =
-    noveltyHistory.value.length > 1
-      ? Math.sqrt(
-          noveltyHistory.value.reduce((sum, value) => sum + Math.pow(value - noveltyMean, 2), 0) /
-            noveltyHistory.value.length
-        )
-      : noveltyMean;
-  const noveltyZ = Math.max(0, (novelty - noveltyMean) / Math.max(noveltyDeviation, 0.015));
-  const noveltyResponse = 1 - Math.exp(-2.8 * noveltyZ);
-  const responseRise = noveltyResponse - lastNoveltyResponse.value;
-
-  const refractoryMs = estimatedIntervalMs.value > 0 ? Math.max(250, estimatedIntervalMs.value * 0.42) : 280;
-  const sinceLastBeat = lastHeuristicBeatAt.value ? now - lastHeuristicBeatAt.value : Infinity;
-  const detectedBeat = noveltyResponse > 0.52 && responseRise > 0.035 && sinceLastBeat >= refractoryMs;
-
-  lastNoveltyResponse.value = noveltyResponse;
-
-  if (detectedBeat) {
-    if (lastHeuristicBeatAt.value) {
-      const interval = now - lastHeuristicBeatAt.value;
-
-      if (interval >= 180 && interval <= 1600) {
-        heuristicIntervals.value.push(interval);
-        if (heuristicIntervals.value.length > 6) {
-          heuristicIntervals.value.splice(0, heuristicIntervals.value.length - 6);
-        }
-
-        const averageInterval =
-          heuristicIntervals.value.reduce((sum, value) => sum + value, 0) / heuristicIntervals.value.length;
-
-        registerImpact(now, averageInterval);
-      } else {
-        registerImpact(now);
-      }
-    } else {
-      registerImpact(now);
-    }
-
-    lastHeuristicBeatAt.value = now;
-  }
-
-  if (heuristicIntervals.value.length > 0 && lastHeuristicBeatAt.value) {
-    const averageInterval = heuristicIntervals.value.reduce((sum, value) => sum + value, 0) / heuristicIntervals.value.length;
-    const deviation =
-      heuristicIntervals.value.reduce((sum, value) => sum + Math.abs(value - averageInterval), 0) / heuristicIntervals.value.length;
-    const stability = clamp(1 - deviation / Math.max(averageInterval * 0.22, 1), 0, 1);
-    const coverage = clamp(heuristicIntervals.value.length / 4, 0, 1);
-    const progress = clamp((now - lastHeuristicBeatAt.value) / averageInterval, 0, 1);
-
-    phase.value = progress;
-    anticipation.value = Math.pow(clamp((progress - 0.6) / 0.4, 0, 1), 1.3) * stability;
-    confidence.value = clamp(stability * coverage * 0.88 + noveltyResponse * 0.18, 0, 1);
-  } else {
-    phase.value = 0;
-    anticipation.value = 0;
-    confidence.value = 0;
-  }
-}
-
-const sampler = window.setInterval(() => {
-  if (!visible.value) return;
-
-  const now = Date.now();
-  const stream = Math.max(0, Number(sources.stream) || 0);
-
-  updateImpact(now);
-
-  if (!updateSpotifyBeat(now)) {
-    updateHeuristicBeat(now);
-  }
-
-  hue.value = (176 + stream * 160 + anticipation.value * 64 + impact.value * 22) % 360;
-}, 40);
-
-onBeforeUnmount(() => {
-  window.clearInterval(sampler);
 });
 </script>
 

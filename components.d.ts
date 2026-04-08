@@ -16,6 +16,7 @@ declare module 'vue' {
     Menu: typeof import('./src/components/Menu.vue')['default']
     MenuHeader: typeof import('./src/components/MenuHeader.vue')['default']
     PrismVeil: typeof import('./src/components/PrismVeil.vue')['default']
+    PulseOverlay: typeof import('./src/components/PulseOverlay.vue')['default']
     Renderer: typeof import('./src/components/Renderer.vue')['default']
   }
 }

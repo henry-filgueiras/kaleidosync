@@ -14,6 +14,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { AudioSource } from "@wearesage/shared";
 import { useViewport } from "@wearesage/vue";
 import { useAudioFeatures } from "../stores/audio-features";
+import { usePulse } from "../stores/pulse";
 import { useSources } from "../stores/sources";
 import { type FractalTraverseLayoutMode, useVisualizerSettings } from "../stores/visualizer-settings";
 
@@ -211,12 +212,31 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float palette
     pizzaSymmetryData(fragCoord, discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
 
     float seamBias = 1.0 - seamDistance;
-    float wedgeCoord = canonicalAngle / max(sliceAngle * 0.5, 0.0001);
+    float halfSlice = max(sliceAngle * 0.5, 0.0001);
+    float outsideMix = smoothstep(0.94, 1.2, radius);
+    float haloMix = smoothstep(0.86, 1.02, radius) * (1.0 - smoothstep(1.18, 1.54, radius));
+    float radiusInversion = clamp(1.02 / max(radius, 0.0001), 0.18, 1.06);
     float phaseCos = cos(slicePhase);
     float phaseSin = sin(slicePhase);
-    float warpEnvelope = smoothstep(0.05, 0.3, radius) * (1.0 - smoothstep(0.82, 1.02, radius));
+    float recurrenceBand =
+      0.5 +
+      0.5 *
+      sin((radius - 1.0) * (5.4 + uPizzaWarp * 2.6) - uPizzaMorph * 0.34 + slicePhase * (1.0 + phaseCos * 0.14));
+    float continuationRadius = clamp(mix(radiusInversion, 0.26 + recurrenceBand * 0.54, 0.46 + haloMix * 0.18), 0.18, 0.94);
+    float continuationTwist =
+      (radius - 1.0) * (0.48 + uPizzaWarp * 0.22) +
+      log(1.0 + max(radius - 1.0, 0.0) * 2.4) * (0.58 + uSymmetryStrength * 0.22) +
+      phaseSin * 0.08;
+    float mappedRadius = mix(radius, continuationRadius, outsideMix);
+    float mappedAngle = canonicalAngle + continuationTwist * outsideMix;
+    float wedgeCoord = mappedAngle / halfSlice;
+    vec2 radialDirection = radius > 0.0001 ? discUv / radius : vec2(0.0, 1.0);
+    vec2 mappedDiscUv = radialDirection * mappedRadius;
+    float discWarpEnvelope = smoothstep(0.05, 0.3, radius) * (1.0 - smoothstep(0.82, 1.02, radius));
+    float exteriorWarpEnvelope = outsideMix * (1.0 - smoothstep(1.22, 2.04, radius));
+    float warpEnvelope = max(discWarpEnvelope, exteriorWarpEnvelope);
     float radialWarp =
-      sin(radius * (7.6 + phaseCos * 1.2) - uPizzaMorph * (1.12 + phaseSin * 0.12) + slicePhase) *
+      sin(mappedRadius * (7.6 + phaseCos * 1.2) - uPizzaMorph * (1.12 + phaseSin * 0.12) + slicePhase) *
       (0.055 + uPizzaWarp * (0.1 + uSymmetryStrength * 0.04)) *
       warpEnvelope;
     float angularWarp =
@@ -228,21 +248,22 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float palette
     // through the symmetry phase k -> exp(i * 2pi * m * k / n).
     vec2 wedgeUv = vec2(
       wedgeCoord * (0.92 + uSymmetryStrength * 0.16 + phaseCos * 0.05) + angularWarp,
-      (radius - 0.47) * (1.42 + phaseSin * 0.12) + radialWarp
+      (mappedRadius - 0.47) * (1.42 + phaseSin * 0.12) + radialWarp
     );
     wedgeUv = rotate2d(
       wedgeUv * (0.9 + uSymmetryStrength * 0.12 + phaseCos * 0.08) +
       vec2(phaseCos, phaseSin) * (0.028 + uSymmetryStrength * 0.028) +
-      discUv * (0.034 + uPizzaWarp * 0.028),
+      mappedDiscUv * (0.034 + uPizzaWarp * 0.028),
       phaseSin * (0.22 + uSymmetryStrength * 0.18) + phaseCos * uPizzaMorph * 0.035
     );
 
-    float sampleSpan = uScale * (0.84 + uPizzaWarp * 0.16 + uSymmetryStrength * 0.12);
-    paletteUv = mix(discUv, wedgeUv * 0.44, 0.4);
+    float sampleSpan = uScale * (0.84 + uPizzaWarp * 0.16 + uSymmetryStrength * 0.12) * mix(1.0, 0.76, outsideMix);
+    paletteUv = mix(mappedDiscUv, wedgeUv * 0.48, 0.42 + outsideMix * 0.2);
     paletteOffset =
       (phaseCos * 0.045 + phaseSin * 0.022) * uSymmetryStrength +
       seamBias * 0.024 +
-      radius * 0.02 +
+      mappedRadius * 0.02 +
+      outsideMix * (0.032 + recurrenceBand * 0.024) +
       mix(wedgeCoord * 0.006, wedgeCoord * 0.012, step(0.5, uSymmetryGroup));
     return sampleMutatingMandelbrot(uCenter + rotate2d(wedgeUv, uRotation + uPizzaSpin * 0.07) * sampleSpan);
   }
@@ -286,24 +307,50 @@ vec3 applyPizzaComposition(vec3 color, vec2 fragCoord) {
   float slicePhase;
   pizzaSymmetryData(fragCoord, discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
 
-  float discMask = 1.0 - smoothstep(0.985, 1.035, radius);
+  float halfSlice = max(sliceAngle * 0.5, 0.0001);
+  float wedgeCoord = canonicalAngle / halfSlice;
+  float discMask = 1.0 - smoothstep(0.92, 0.985, radius);
+  float haloMask = smoothstep(0.88, 1.02, radius) * (1.0 - smoothstep(1.16, 1.42, radius));
+  float outerFieldMask = smoothstep(0.98, 1.3, radius) * (1.0 - smoothstep(1.94, 2.24, radius));
   float seamShadow = (1.0 - smoothstep(0.04, 0.2, seamDistance)) * smoothstep(0.1, 0.92, radius);
   float seamGlow = (1.0 - smoothstep(0.0, 0.1, seamDistance)) * smoothstep(0.16, 0.92, radius);
   float hubMask = 1.0 - smoothstep(0.045, 0.17, radius);
   float hubRing = smoothstep(0.08, 0.11, radius) * (1.0 - smoothstep(0.15, 0.19, radius));
-  float rim = smoothstep(0.78, 0.95, radius) * (1.0 - smoothstep(0.98, 1.04, radius));
+  float rim = smoothstep(0.74, 0.9, radius) * (1.0 - smoothstep(0.96, 1.02, radius));
+  float exteriorReach = 1.0 - smoothstep(1.7, 2.18, radius);
   vec3 background = vec3(0.004, 0.006, 0.011);
   vec3 seamColor = vec3(0.024, 0.018, 0.03) + vec3(0.08, 0.055, 0.04) * (0.22 + uPaletteEnergy * 0.16);
   vec3 crustGlow = vec3(0.16, 0.11, 0.08) * (0.06 + uPaletteEnergy * 0.05);
   vec3 hubGlow = vec3(0.11, 0.1, 0.13) * (0.08 + uAmbientLift * 0.12);
+  float exteriorPhase = canonicalAngle * 6.2 + radius * (3.8 + uPizzaWarp * 1.9) - uPizzaMorph * 0.35 + slicePhase;
+  float mirrorBloom = 0.5 + 0.5 * cos(exteriorPhase);
+  float sliceBloom = pow(clamp(1.0 - abs(wedgeCoord), 0.0, 1.0), 1.35);
+  float radialBands = 0.5 + 0.5 * cos((radius - 0.92) * (8.4 + uPizzaWarp * 2.4) - uPizzaMorph * 0.4 + slicePhase);
+  float exteriorSymmetry = sliceBloom * (0.52 + radialBands * 0.48);
+  float exteriorLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  vec3 exteriorBase = mix(vec3(exteriorLuma * (0.28 + uAmbientLift * 0.2)), color, 0.44 + uPaletteEnergy * 0.18);
+  vec3 haloColor =
+    exteriorBase * (0.54 + uAmbientLift * 0.34) +
+    seamColor * (0.1 + mirrorBloom * 0.08) +
+    crustGlow * exteriorSymmetry * 0.14;
+  vec3 outerColor =
+    mix(vec3(exteriorLuma), exteriorBase, 0.72) * (0.24 + uAmbientLift * 0.22 + uPaletteEnergy * 0.08);
+  outerColor += seamColor * exteriorSymmetry * (0.08 + mirrorBloom * 0.07);
+  outerColor += crustGlow * (0.03 + radialBands * 0.045);
 
-  color *= 1.0 - seamShadow * 0.14;
-  color = mix(color, seamColor, seamGlow * 0.12);
-  color += crustGlow * rim;
-  color = mix(color, background, hubMask * 0.58);
-  color += hubGlow * hubRing;
+  vec3 discColor = color;
 
-  return mix(background, color, discMask);
+  discColor *= 1.0 - seamShadow * 0.14;
+  discColor = mix(discColor, seamColor, seamGlow * 0.12);
+  discColor += crustGlow * rim;
+  discColor = mix(discColor, background, hubMask * 0.58);
+  discColor += hubGlow * hubRing;
+
+  vec3 exterior = background;
+  exterior = mix(exterior, haloColor, haloMask * 0.88);
+  exterior = mix(exterior, outerColor, outerFieldMask * exteriorReach);
+
+  return mix(exterior, discColor, discMask);
 }
 
 void main() {
@@ -661,6 +708,7 @@ const viewport = useViewport();
 const sources = useSources();
 const settings = useVisualizerSettings();
 const audioFeatures = useAudioFeatures();
+const pulse = usePulse();
 const TAU = Math.PI * 2;
 
 function clamp(value: number, min: number, max: number) {
@@ -2183,6 +2231,9 @@ function updateInterestGuidance(
 function updateAudioResponse(deltaSeconds: number) {
   const stream = clamp(Number(sources.stream) || 0, 0, 1);
   const spectral = audioFeatures.update(deltaSeconds);
+  const pulseConfidence = pulse.confidence;
+  const pulseImpact = pulse.impact * pulseConfidence;
+  const pulseAnticipation = pulse.anticipation * pulseConfidence;
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
   const bassDriveTarget = clamp(spectral.bass * 0.78 + spectral.lowMid * 0.22, 0, 1);
   const midDriveTarget = clamp(spectral.mid * 0.74 + spectral.lowMid * 0.26, 0, 1);
@@ -2198,22 +2249,50 @@ function updateAudioResponse(deltaSeconds: number) {
   audio.noveltySmoothed = damp(audio.noveltySmoothed, spectral.novelty, 4.6, deltaSeconds);
   audio.temperature = damp(audio.temperature, temperatureTarget, 2.4, deltaSeconds);
   audio.surge = damp(audio.surge, fluxExcitement, 7.1, deltaSeconds);
-  audio.ambient = damp(audio.ambient, clamp(0.16 + audio.energy * 0.56 + stream * 0.18, 0.16, 1), 2.1, deltaSeconds);
+  audio.ambient = damp(audio.ambient, clamp(0.16 + audio.energy * 0.56 + stream * 0.18 + pulseAnticipation * 0.05, 0.16, 1), 2.1, deltaSeconds);
   audio.zoom = damp(
     audio.zoom,
-    clamp(0.13 + audio.ambient * 0.14 + audio.bassDrive * 0.24 + (audio.noveltySmoothed * 0.22 + audio.spectralFlux * 0.6) * reactivity, 0.12, 1.45),
+    clamp(
+      0.13 +
+        audio.ambient * 0.14 +
+        audio.bassDrive * 0.24 +
+        pulseImpact * 0.14 +
+        pulseAnticipation * 0.08 +
+        (audio.noveltySmoothed * 0.22 + audio.spectralFlux * 0.6) * reactivity,
+      0.12,
+      1.45
+    ),
     3.5,
     deltaSeconds
   );
   audio.bend = damp(
     audio.bend,
-    clamp(0.18 + stream * 0.18 + audio.midDrive * 0.4 + (audio.noveltySmoothed * 0.14 + audio.spectralFlux * 0.22) * reactivity, 0.16, 1.3),
+    clamp(
+      0.18 +
+        stream * 0.18 +
+        audio.midDrive * 0.4 +
+        pulseAnticipation * 0.12 +
+        pulseImpact * 0.04 +
+        (audio.noveltySmoothed * 0.14 + audio.spectralFlux * 0.22) * reactivity,
+      0.16,
+      1.3
+    ),
     3.1,
     deltaSeconds
   );
   audio.palette = damp(
     audio.palette,
-    clamp(0.2 + stream * 0.18 + audio.highDrive * 0.48 + audio.temperature * 0.14 + audio.spectralFlux * 0.14 * reactivity, 0.18, 1.25),
+    clamp(
+      0.2 +
+        stream * 0.18 +
+        audio.highDrive * 0.48 +
+        audio.temperature * 0.14 +
+        pulseImpact * 0.08 +
+        pulseAnticipation * 0.05 +
+        audio.spectralFlux * 0.14 * reactivity,
+      0.18,
+      1.25
+    ),
     2.3,
     deltaSeconds
   );
@@ -2308,6 +2387,7 @@ function updateTraversal(deltaSeconds: number, now: number) {
   const curvatureBank = clamp(angleDelta(tangentAheadAngle, tangentAngle) * 3.1, -0.16, 0.16);
   const focusNormalAmount = interest.focusOffset.x * normalUnit.x + interest.focusOffset.y * normalUnit.y;
   const correctionBank = clamp((focusNormalAmount / Math.max(normalLimit, 0.000001)) * 0.05, -0.05, 0.05);
+  const pulseZoomKick = pulse.confidence * (pulse.impact * 0.015 + pulse.anticipation * 0.006);
   const rotationTarget =
     lerp(from.rotation + from.bank, to.rotation + to.bank, easedPath) +
     headingBias +
@@ -2316,7 +2396,7 @@ function updateTraversal(deltaSeconds: number, now: number) {
     Math.sin(traversal.bendPhase * 0.42 + traversal.segmentSeed) * (0.008 + audio.bend * 0.014) +
     (audio.temperature - 0.5) * 0.024 * reactivity +
     traversal.transitionRotationOffset;
-  const audioZoomFactor = 1 - audio.zoom * 0.03 * reactivity * interest.zoomPermission;
+  const audioZoomFactor = 1 - (audio.zoom * 0.03 + pulseZoomKick) * reactivity * interest.zoomPermission;
   const railPull = lerp(from.railPull, to.railPull, easedPath);
   const correctionInfluence = clamp((1 - railPull) * 2.2 + traversal.segmentEscape * 0.08, 0.42, 0.72);
 
@@ -2396,6 +2476,9 @@ function renderFractal(deltaSeconds: number) {
   const currentPoi = family.pointsOfInterest[traversal.currentIndex];
   const nextPoi = family.pointsOfInterest[traversal.nextIndex];
   const pizzaSymmetry = getPizzaSymmetryState();
+  const pulseImpact = pulse.impact * pulse.confidence;
+  const pulseAnticipation = pulse.anticipation * pulse.confidence;
+  const pulseGlow = pulseImpact * 0.9 + pulseAnticipation * 0.4;
   const pizzaPathMix = smoothStep(clamp(traversal.progress, 0, 1));
   const pizzaAnchor = {
     x: lerp(currentPoi.center.x, nextPoi.center.x, pizzaPathMix * 0.34),
@@ -2447,7 +2530,7 @@ function renderFractal(deltaSeconds: number) {
   const currentHeight = Math.max(1, Math.round(renderState.displayHeight * quality.renderScale));
   const pizzaLayoutMix = isPizzaLayout.value ? 1 : 0;
   const pizzaWarp = isPizzaLayout.value
-    ? clamp(0.14 + audio.bend * 0.1 + audio.highDrive * 0.06 + audio.spectralFlux * 0.05 + pizzaSymmetry.strength * 0.04, 0.14, 0.42)
+    ? clamp(0.14 + audio.bend * 0.1 + audio.highDrive * 0.06 + audio.spectralFlux * 0.05 + pizzaSymmetry.strength * 0.04 + pulseAnticipation * 0.05, 0.14, 0.42)
     : 0;
   const pizzaSpin = traversal.camera.rotation * 0.8 + traversal.palettePhase * TAU * 0.18 + (audio.temperature - 0.5) * 0.9;
   const pizzaMorph =
@@ -2455,7 +2538,9 @@ function renderFractal(deltaSeconds: number) {
     traversal.driftPhase * 0.28 +
     fractalMutation.depth * 2.4 +
     audio.zoom * 0.36 +
-    audio.spectralFlux * 0.7;
+    audio.spectralFlux * 0.7 +
+    pulseImpact * 0.28 +
+    pulseAnticipation * 0.12;
 
   if (
     !ensureRenderTarget(gl, renderState.currentTarget, currentWidth, currentHeight, gl.LINEAR) ||
@@ -2484,8 +2569,8 @@ function renderFractal(deltaSeconds: number) {
   const palettePhase =
     traversal.palettePhase + family.pointsOfInterest[traversal.currentIndex].hueOffset + (audio.temperature - 0.5) * 0.08;
   gl.uniform1f(fractalUniforms.palettePhase, ((palettePhase % 1) + 1) % 1);
-  gl.uniform1f(fractalUniforms.ambientLift, (0.07 + audio.ambient * 0.08) * (1 - traversal.voidMix * 0.82));
-  gl.uniform1f(fractalUniforms.paletteEnergy, (0.14 + audio.palette * 0.12 + audio.highDrive * 0.06) * (1 - traversal.voidMix * 0.9));
+  gl.uniform1f(fractalUniforms.ambientLift, (0.07 + audio.ambient * 0.08 + pulseGlow * 0.03) * (1 - traversal.voidMix * 0.82));
+  gl.uniform1f(fractalUniforms.paletteEnergy, (0.14 + audio.palette * 0.12 + audio.highDrive * 0.06 + pulseGlow * 0.05) * (1 - traversal.voidMix * 0.9));
   gl.uniform1f(fractalUniforms.stableAA, stableAA);
   gl.uniform1i(fractalUniforms.maxIterations, maxIterations);
   gl.uniform1f(fractalUniforms.structurePower, fractalMutation.parameters.power);
