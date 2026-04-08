@@ -45,6 +45,8 @@ uniform float uStructurePower;
 uniform float uTrapMix;
 uniform float uTrapScale;
 uniform float uPaletteBias;
+uniform float uVoidFade;
+uniform float uVoidCollapse;
 
 const int MAX_ITERATIONS = 768;
 const float TAU = 6.28318530718;
@@ -109,17 +111,27 @@ vec3 colorize(FractalSample sample, vec2 uv) {
   float paletteT = uPalettePhase + uPaletteBias + normalized * (0.84 + uTrapMix * 0.06) + trapGlow * (0.14 + uTrapMix * 0.06);
   vec3 wave = 0.5 + 0.5 * cos(TAU * (paletteT + vec3(0.02, 0.22, 0.47)));
   float vignette = clamp(1.08 - dot(uv, uv) * 1.42, 0.68, 1.08);
+  vec3 color;
 
   if (sample.escaped < 0.5) {
     float interior = (0.02 + trapGlow * (0.12 + uTrapMix * 0.06) + uAmbientLift * 0.82) * vignette;
-    return pow(vec3(interior * 0.11, interior * 0.16, interior * 0.27), vec3(0.96));
+    color = pow(vec3(interior * 0.11, interior * 0.16, interior * 0.27), vec3(0.96));
+  } else {
+    float boundary = pow(normalized, 1.18);
+    float shimmer = 0.16 + uPaletteEnergy + trapGlow * (0.28 + uTrapMix * 0.14);
+    float brightness = (uAmbientLift + boundary * 0.68 + shimmer) * vignette;
+    color = vec3(0.1 + wave.r * 0.9, 0.08 + wave.g * 0.72, 0.18 + wave.b * 0.96) * brightness;
+    color = pow(color, vec3(0.94));
   }
 
-  float boundary = pow(normalized, 1.18);
-  float shimmer = 0.16 + uPaletteEnergy + trapGlow * (0.28 + uTrapMix * 0.14);
-  float brightness = (uAmbientLift + boundary * 0.68 + shimmer) * vignette;
-  vec3 color = vec3(0.1 + wave.r * 0.9, 0.08 + wave.g * 0.72, 0.18 + wave.b * 0.96) * brightness;
-  return pow(color, vec3(0.94));
+  float grayscale = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  vec3 desaturated = mix(color, vec3(grayscale), clamp(uVoidFade * 0.76, 0.0, 1.0));
+  float radial = length(uv * vec2(1.0, 1.08));
+  float collapseEdge = mix(1.18, 0.28, clamp(uVoidCollapse, 0.0, 1.0));
+  float collapseMask = smoothstep(collapseEdge, 1.22, radial);
+  float voidMask = clamp(uVoidFade * mix(0.52, 1.0, collapseMask), 0.0, 1.0);
+
+  return mix(desaturated * (1.0 - uVoidFade * 0.54), vec3(0.003, 0.005, 0.009), voidMask);
 }
 
 FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv) {
@@ -337,6 +349,9 @@ type AudioResponseState = {
   palette: number;
 };
 
+type TraversalMode = "explore" | "dissolve" | "transit" | "reveal";
+type VoidTransitionStyle = "fade" | "zoom" | "turn";
+
 type TraversalState = {
   currentIndex: number;
   nextIndex: number;
@@ -352,6 +367,17 @@ type TraversalState = {
   segmentEscape: number;
   desiredCamera: FractalViewport;
   camera: FractalViewport;
+  mode: TraversalMode;
+  modeElapsed: number;
+  modeDuration: number;
+  transitionCooldownUntil: number;
+  transitionTargetIndex: number;
+  transitionTargetNextIndex: number;
+  transitionStyle: VoidTransitionStyle;
+  voidMix: number;
+  voidCollapse: number;
+  transitionScaleMultiplier: number;
+  transitionRotationOffset: number;
 };
 
 type InterestMetrics = {
@@ -422,6 +448,8 @@ type FractalUniforms = {
   trapMix: WebGLUniformLocation | null;
   trapScale: WebGLUniformLocation | null;
   paletteBias: WebGLUniformLocation | null;
+  voidFade: WebGLUniformLocation | null;
+  voidCollapse: WebGLUniformLocation | null;
 };
 
 type CompositeUniforms = {
@@ -584,6 +612,35 @@ function createRenderTargetState(): RenderTarget {
     width: 0,
     height: 0,
   };
+}
+
+const VOID_TRANSITION_CONFIG = {
+  // These thresholds keep void transitions rare: they only start after the framing
+  // search has been genuinely stuck in a flat region for a while.
+  triggerLowInterestTime: 1.9,
+  triggerCurrentScore: 0.43,
+  triggerBestScore: 0.52,
+  initialGuardMs: 11_000,
+  cooldownMs: {
+    min: 22_000,
+    max: 32_000,
+  },
+  dissolveDuration: {
+    min: 1.3,
+    max: 2.1,
+  },
+  transitDuration: {
+    min: 0.42,
+    max: 0.68,
+  },
+  revealDuration: {
+    min: 1.9,
+    max: 2.8,
+  },
+} as const;
+
+function getNowMs() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
 // Anchor preset plus a few curated variants so v1 mutation stays cinematic instead of chaotic.
@@ -830,6 +887,7 @@ function createTraversalState(fractalFamily: FractalFamily): TraversalState {
   const camera = fractalFamily.getStartViewport();
   const startPoi = fractalFamily.pointsOfInterest[0];
   const nextIndex = fractalFamily.getPoiIndexById(startPoi.outbound[0] ?? startPoi.id);
+  const now = getNowMs();
   return {
     currentIndex: 0,
     nextIndex,
@@ -845,6 +903,17 @@ function createTraversalState(fractalFamily: FractalFamily): TraversalState {
     segmentEscape: 0,
     desiredCamera: copyViewport(camera),
     camera,
+    mode: "explore",
+    modeElapsed: 0,
+    modeDuration: 0,
+    transitionCooldownUntil: now + VOID_TRANSITION_CONFIG.initialGuardMs,
+    transitionTargetIndex: nextIndex,
+    transitionTargetNextIndex: nextIndex,
+    transitionStyle: "fade",
+    voidMix: 0,
+    voidCollapse: 0,
+    transitionScaleMultiplier: 1,
+    transitionRotationOffset: 0,
   };
 }
 
@@ -999,6 +1068,7 @@ function resetTraversalState() {
   const start = family.getStartViewport();
   const firstPoi = family.pointsOfInterest[0];
   const nextIndex = family.getPoiIndexById(firstPoi.outbound[0] ?? firstPoi.id);
+  const now = getNowMs();
   traversal.currentIndex = 0;
   traversal.nextIndex = nextIndex;
   traversal.previousIndex = 0;
@@ -1013,7 +1083,242 @@ function resetTraversalState() {
   traversal.segmentEscape = 0;
   traversal.desiredCamera = copyViewport(start);
   traversal.camera = start;
+  traversal.mode = "explore";
+  traversal.modeElapsed = 0;
+  traversal.modeDuration = 0;
+  traversal.transitionCooldownUntil = now + VOID_TRANSITION_CONFIG.initialGuardMs;
+  traversal.transitionTargetIndex = nextIndex;
+  traversal.transitionTargetNextIndex = nextIndex;
+  traversal.transitionStyle = "fade";
+  traversal.voidMix = 0;
+  traversal.voidCollapse = 0;
+  traversal.transitionScaleMultiplier = 1;
+  traversal.transitionRotationOffset = 0;
   resetTemporalState();
+}
+
+function setTraversalMode(mode: TraversalMode, duration: number) {
+  traversal.mode = mode;
+  traversal.modeElapsed = 0;
+  traversal.modeDuration = duration;
+}
+
+function createPoiViewport(poi: FractalPoi, scaleMultiplier = 1, rotationOffset = 0): FractalViewport {
+  return {
+    center: {
+      x: poi.center.x,
+      y: poi.center.y,
+    },
+    scale: clamp(poi.scale * scaleMultiplier, 0.02, 3.2),
+    rotation: poi.rotation + poi.bank * 0.35 + rotationOffset,
+  };
+}
+
+function chooseVoidTransitionStyle(): VoidTransitionStyle {
+  const excitement = clamp(audio.spectralFlux * 0.68 + audio.noveltySmoothed * 0.32, 0, 1);
+
+  if (excitement > 0.7) return "turn";
+  if (audio.bassDrive > audio.highDrive + 0.08) return "zoom";
+  return "fade";
+}
+
+function pickVoidTransitionTarget(aspectRatio: number) {
+  const currentPoi = family.pointsOfInterest[traversal.currentIndex];
+  const adventurousness = clamp(audio.spectralFlux * 0.48 + audio.noveltySmoothed * 0.32 + audio.bassDrive * 0.2, 0, 1);
+  let bestIndex = traversal.nextIndex;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (let candidateIndex = 0; candidateIndex < family.pointsOfInterest.length; candidateIndex++) {
+    if (candidateIndex === traversal.currentIndex) continue;
+
+    const candidatePoi = family.pointsOfInterest[candidateIndex];
+    const metrics = evaluateInterest(candidatePoi.center, clamp(candidatePoi.scale * 1.04, 0.02, 3.2), aspectRatio);
+    const spatialJump = clamp(Math.log1p(distance(currentPoi.center, candidatePoi.center) * 4.2) / 2.3, 0, 1);
+    const zoomJump = clamp(
+      Math.abs(Math.log(Math.max(currentPoi.scale, 0.000001) / Math.max(candidatePoi.scale, 0.000001))) / 3.2,
+      0,
+      1
+    );
+    const bendContrast = clamp(Math.abs(candidatePoi.bend - currentPoi.bend) * 2.2, 0, 1);
+    const revisitIndex = traversal.recentPoiIndices.lastIndexOf(candidateIndex);
+    const revisitPenalty =
+      revisitIndex >= 0 ? clamp(0.34 - (traversal.recentPoiIndices.length - 1 - revisitIndex) * 0.08, 0.08, 0.34) : 0;
+    const branchPenalty = currentPoi.outbound.includes(candidatePoi.id) ? 0.06 : 0;
+    const authoredJumpBonus = adventurousness * clamp(zoomJump * 0.14 + bendContrast * 0.1, 0, 0.2);
+    const score =
+      metrics.score * 0.74 +
+      candidatePoi.interestBias +
+      spatialJump * 0.24 +
+      zoomJump * 0.12 +
+      authoredJumpBonus -
+      revisitPenalty -
+      branchPenalty;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = candidateIndex;
+    }
+  }
+
+  const previousIndex = traversal.currentIndex;
+  const targetNextIndex = pickNextPoiIndex(bestIndex, previousIndex, aspectRatio);
+  return {
+    targetIndex: bestIndex,
+    targetNextIndex,
+  };
+}
+
+function enterTransitRetarget(now: number, aspectRatio: number) {
+  const sourceIndex = traversal.currentIndex;
+  const targetIndex = traversal.transitionTargetIndex;
+  const targetPoi = family.pointsOfInterest[targetIndex];
+  const targetNextIndex =
+    traversal.transitionTargetNextIndex !== targetIndex
+      ? traversal.transitionTargetNextIndex
+      : pickNextPoiIndex(targetIndex, sourceIndex, aspectRatio);
+  const arrivalScaleMultiplier =
+    traversal.transitionStyle === "zoom" ? 1.68 : traversal.transitionStyle === "turn" ? 1.28 : 1.14;
+  const arrivalRotationOffset =
+    traversal.transitionStyle === "turn"
+      ? clamp((audio.temperature - 0.5) * 0.44 + (targetPoi.bank >= 0 ? 0.12 : -0.12), -0.28, 0.28)
+      : 0;
+  const arrivalCamera = createPoiViewport(targetPoi, arrivalScaleMultiplier, arrivalRotationOffset);
+
+  traversal.previousIndex = sourceIndex;
+  traversal.currentIndex = targetIndex;
+  traversal.nextIndex = targetNextIndex;
+  traversal.recentPoiIndices = [...traversal.recentPoiIndices, targetIndex].slice(-4);
+  traversal.progress = 0;
+  traversal.segmentDuration = calculateSegmentDuration(targetPoi, family.pointsOfInterest[targetNextIndex]);
+  traversal.pathSpeed = 0.78;
+  traversal.segmentEscape = 0;
+  traversal.segmentSeed += 2.61803398875;
+  traversal.palettePhase = targetPoi.hueOffset;
+  traversal.bendPhase += 0.52;
+  traversal.driftPhase += 0.3;
+  traversal.transitionScaleMultiplier = arrivalScaleMultiplier;
+  traversal.transitionRotationOffset = arrivalRotationOffset;
+  traversal.desiredCamera = copyViewport(arrivalCamera);
+  traversal.camera = arrivalCamera;
+
+  interest.focusTargetOffset = { x: 0, y: 0 };
+  interest.focusOffset = { x: 0, y: 0 };
+  interest.focusTargetScore = 0.76;
+  interest.focusTargetHoldUntil = now + 1500;
+  interest.desiredZoomGovernor = 1;
+  interest.zoomGovernor = 1;
+  interest.desiredZoomPermission = 1;
+  interest.zoomPermission = 1;
+  interest.desiredCurrentScore = 0.76;
+  interest.currentScore = 0.76;
+  interest.desiredBestScore = 0.82;
+  interest.bestScore = 0.82;
+  interest.lowInterestTime = 0;
+  interest.searchPhase = targetPoi.hueOffset * Math.PI * 2;
+  interest.lastEvaluationAt = 0;
+
+  resetTemporalState();
+
+  const transitDuration = lerp(
+    VOID_TRANSITION_CONFIG.transitDuration.max,
+    VOID_TRANSITION_CONFIG.transitDuration.min,
+    clamp(audio.noveltySmoothed * 0.5 + audio.spectralFlux * 0.3, 0, 1)
+  );
+  setTraversalMode("transit", transitDuration);
+}
+
+function beginVoidTransition(now: number, aspectRatio: number) {
+  const { targetIndex, targetNextIndex } = pickVoidTransitionTarget(aspectRatio);
+  const transitionEnergy = clamp(audio.noveltySmoothed * 0.55 + audio.spectralFlux * 0.45, 0, 1);
+
+  traversal.transitionTargetIndex = targetIndex;
+  traversal.transitionTargetNextIndex = targetNextIndex;
+  traversal.transitionStyle = chooseVoidTransitionStyle();
+  traversal.transitionCooldownUntil = now + lerp(VOID_TRANSITION_CONFIG.cooldownMs.max, VOID_TRANSITION_CONFIG.cooldownMs.min, transitionEnergy);
+
+  const dissolveDuration = lerp(
+    VOID_TRANSITION_CONFIG.dissolveDuration.max,
+    VOID_TRANSITION_CONFIG.dissolveDuration.min,
+    transitionEnergy
+  );
+  setTraversalMode("dissolve", dissolveDuration);
+}
+
+function updateTraversalMode(deltaSeconds: number, now: number, aspectRatio: number) {
+  if (traversal.modeDuration > 0) {
+    traversal.modeElapsed = Math.min(traversal.modeElapsed + deltaSeconds, traversal.modeDuration);
+  }
+
+  switch (traversal.mode) {
+    case "explore": {
+      traversal.voidMix = damp(traversal.voidMix, 0, 4.6, deltaSeconds);
+      traversal.voidCollapse = damp(traversal.voidCollapse, 0, 4.2, deltaSeconds);
+      traversal.transitionScaleMultiplier = damp(traversal.transitionScaleMultiplier, 1, 2.6, deltaSeconds);
+      traversal.transitionRotationOffset = damp(traversal.transitionRotationOffset, 0, 2.2, deltaSeconds);
+
+      const shouldTransition =
+        now >= traversal.transitionCooldownUntil &&
+        traversal.progress > 0.16 &&
+        interest.lowInterestTime >= VOID_TRANSITION_CONFIG.triggerLowInterestTime &&
+        interest.currentScore <= VOID_TRANSITION_CONFIG.triggerCurrentScore &&
+        interest.bestScore <= VOID_TRANSITION_CONFIG.triggerBestScore;
+
+      if (shouldTransition) {
+        beginVoidTransition(now, aspectRatio);
+      }
+      break;
+    }
+    case "dissolve": {
+      const dissolveProgress = smoothStep(clamp(traversal.modeElapsed / Math.max(traversal.modeDuration, 0.000001), 0, 1));
+      const collapseTarget = traversal.transitionStyle === "zoom" ? 0.62 : traversal.transitionStyle === "turn" ? 0.74 : 0.82;
+      const rotationTarget = traversal.transitionStyle === "turn" ? (audio.temperature - 0.5) * 0.08 : 0;
+
+      traversal.voidMix = damp(traversal.voidMix, 0.72 + dissolveProgress * 0.18, 3.8, deltaSeconds);
+      traversal.voidCollapse = damp(traversal.voidCollapse, collapseTarget * dissolveProgress, 3.4, deltaSeconds);
+      traversal.transitionScaleMultiplier = damp(traversal.transitionScaleMultiplier, 1 - dissolveProgress * 0.08, 2.6, deltaSeconds);
+      traversal.transitionRotationOffset = damp(traversal.transitionRotationOffset, rotationTarget, 2, deltaSeconds);
+
+      if (traversal.modeElapsed >= traversal.modeDuration) {
+        enterTransitRetarget(now, aspectRatio);
+      }
+      break;
+    }
+    case "transit": {
+      const collapseTarget = traversal.transitionStyle === "zoom" ? 0.68 : 0.8;
+
+      traversal.voidMix = damp(traversal.voidMix, 1, 7.2, deltaSeconds);
+      traversal.voidCollapse = damp(traversal.voidCollapse, collapseTarget, 6.2, deltaSeconds);
+
+      if (traversal.modeElapsed >= traversal.modeDuration) {
+        const revealDuration = lerp(
+          VOID_TRANSITION_CONFIG.revealDuration.max,
+          VOID_TRANSITION_CONFIG.revealDuration.min,
+          clamp(audio.highDrive * 0.35 + audio.noveltySmoothed * 0.25, 0, 1)
+        );
+        setTraversalMode("reveal", revealDuration);
+      }
+      break;
+    }
+    case "reveal": {
+      const revealProgress = smoothStep(clamp(traversal.modeElapsed / Math.max(traversal.modeDuration, 0.000001), 0, 1));
+      const darkness = 1 - revealProgress;
+      const collapseTarget = traversal.transitionStyle === "zoom" ? 0.42 : 0.52;
+
+      traversal.voidMix = damp(traversal.voidMix, darkness * 0.92, 4.2, deltaSeconds);
+      traversal.voidCollapse = damp(traversal.voidCollapse, darkness * collapseTarget, 4.1, deltaSeconds);
+      traversal.transitionScaleMultiplier = damp(traversal.transitionScaleMultiplier, 1, 1.45 + revealProgress * 1.2, deltaSeconds);
+      traversal.transitionRotationOffset = damp(traversal.transitionRotationOffset, 0, 1.35 + revealProgress * 1.4, deltaSeconds);
+
+      if (traversal.modeElapsed >= traversal.modeDuration) {
+        traversal.voidMix = 0;
+        traversal.voidCollapse = 0;
+        traversal.transitionScaleMultiplier = 1;
+        traversal.transitionRotationOffset = 0;
+        setTraversalMode("explore", 0);
+      }
+      break;
+    }
+  }
 }
 
 function createShader(gl: WebGLRenderingContext, type: number, source: string) {
@@ -1258,6 +1563,8 @@ function ensureRenderer() {
     trapMix: context.getUniformLocation(fractalProgram, "uTrapMix"),
     trapScale: context.getUniformLocation(fractalProgram, "uTrapScale"),
     paletteBias: context.getUniformLocation(fractalProgram, "uPaletteBias"),
+    voidFade: context.getUniformLocation(fractalProgram, "uVoidFade"),
+    voidCollapse: context.getUniformLocation(fractalProgram, "uVoidCollapse"),
   };
   renderState.compositeUniforms = {
     currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
@@ -1726,12 +2033,24 @@ function updateAudioResponse(deltaSeconds: number) {
 function updateTraversal(deltaSeconds: number, now: number) {
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
   const aspectRatio = getViewportAspectRatio();
+  updateTraversalMode(deltaSeconds, now, aspectRatio);
+
+  if (traversal.mode === "transit") {
+    traversal.pathSpeed = damp(traversal.pathSpeed, 0.42, 3.2, deltaSeconds);
+    traversal.segmentEscape = damp(traversal.segmentEscape, 0, 4.2, deltaSeconds);
+    traversal.bendPhase += deltaSeconds * 0.08;
+    traversal.driftPhase += deltaSeconds * 0.06;
+    traversal.palettePhase = (traversal.palettePhase + deltaSeconds * 0.01) % 1;
+    return;
+  }
+
   const escapeTarget = clamp((interest.lowInterestTime - 0.55) / 1.35, 0, 1);
   const calmCruise = 0.82 + audio.ambient * 0.08;
   const audioTravelBias = (audio.noveltySmoothed * 0.04 + audio.spectralFlux * 0.12 + audio.surge * 0.05) * reactivity;
+  const modeSpeedMultiplier = traversal.mode === "dissolve" ? 0.58 : traversal.mode === "reveal" ? 0.84 : 1;
 
   traversal.segmentEscape = damp(traversal.segmentEscape, escapeTarget, 2.1, deltaSeconds);
-  const speedTarget = clamp(calmCruise + audioTravelBias + traversal.segmentEscape * 0.22, 0.76, 1.16);
+  const speedTarget = clamp((calmCruise + audioTravelBias + traversal.segmentEscape * 0.22) * modeSpeedMultiplier, 0.44, 1.16);
   traversal.pathSpeed = damp(traversal.pathSpeed, speedTarget, 2.1, deltaSeconds);
   traversal.progress += (deltaSeconds / traversal.segmentDuration) * traversal.pathSpeed * (1 + traversal.segmentEscape * 0.26);
   traversal.bendPhase += deltaSeconds * (0.28 + audio.bend * 0.24 + audio.midDrive * 0.06);
@@ -1806,7 +2125,8 @@ function updateTraversal(deltaSeconds: number, now: number) {
     curvatureBank +
     correctionBank +
     Math.sin(traversal.bendPhase * 0.42 + traversal.segmentSeed) * (0.008 + audio.bend * 0.014) +
-    (audio.temperature - 0.5) * 0.024 * reactivity;
+    (audio.temperature - 0.5) * 0.024 * reactivity +
+    traversal.transitionRotationOffset;
   const audioZoomFactor = 1 - audio.zoom * 0.03 * reactivity * interest.zoomPermission;
   const railPull = lerp(from.railPull, to.railPull, easedPath);
   const correctionInfluence = clamp((1 - railPull) * 2.2 + traversal.segmentEscape * 0.08, 0.42, 0.72);
@@ -1816,7 +2136,7 @@ function updateTraversal(deltaSeconds: number, now: number) {
       x: railAnchor.x + interest.focusOffset.x * correctionInfluence + driftX,
       y: railAnchor.y + interest.focusOffset.y * correctionInfluence + driftY,
     },
-    scale: clamp(baseScale * interest.zoomGovernor * audioZoomFactor, 0.02, 3.2),
+    scale: clamp(baseScale * interest.zoomGovernor * audioZoomFactor * traversal.transitionScaleMultiplier, 0.02, 3.2),
     rotation: rotationTarget,
   };
 
@@ -1921,7 +2241,7 @@ function renderFractal(deltaSeconds: number) {
   const stableAA = clamp(quality.stableAA * (0.42 + stabilityTarget * 0.58), 0, 1);
   const maxIterations = family.getMaxIterations(
     traversal.camera.scale,
-    clamp(quality.iterationBias + dprBias + zoomDepth * 0.08 + structuralBias, -0.2, 1.6)
+    clamp(quality.iterationBias + dprBias + zoomDepth * 0.08 + structuralBias - traversal.voidMix * 0.42, -0.4, 1.6)
   );
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, renderState.currentTarget.framebuffer);
@@ -1935,14 +2255,16 @@ function renderFractal(deltaSeconds: number) {
   const palettePhase =
     traversal.palettePhase + family.pointsOfInterest[traversal.currentIndex].hueOffset + (audio.temperature - 0.5) * 0.08;
   gl.uniform1f(fractalUniforms.palettePhase, ((palettePhase % 1) + 1) % 1);
-  gl.uniform1f(fractalUniforms.ambientLift, 0.07 + audio.ambient * 0.08);
-  gl.uniform1f(fractalUniforms.paletteEnergy, 0.14 + audio.palette * 0.12 + audio.highDrive * 0.06);
+  gl.uniform1f(fractalUniforms.ambientLift, (0.07 + audio.ambient * 0.08) * (1 - traversal.voidMix * 0.82));
+  gl.uniform1f(fractalUniforms.paletteEnergy, (0.14 + audio.palette * 0.12 + audio.highDrive * 0.06) * (1 - traversal.voidMix * 0.9));
   gl.uniform1f(fractalUniforms.stableAA, stableAA);
   gl.uniform1i(fractalUniforms.maxIterations, maxIterations);
   gl.uniform1f(fractalUniforms.structurePower, fractalMutation.parameters.power);
   gl.uniform1f(fractalUniforms.trapMix, fractalMutation.parameters.trapMix);
   gl.uniform1f(fractalUniforms.trapScale, fractalMutation.parameters.trapScale);
   gl.uniform1f(fractalUniforms.paletteBias, fractalMutation.parameters.paletteBias);
+  gl.uniform1f(fractalUniforms.voidFade, traversal.voidMix);
+  gl.uniform1f(fractalUniforms.voidCollapse, traversal.voidCollapse);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
@@ -1958,7 +2280,7 @@ function renderFractal(deltaSeconds: number) {
   const motionHistoryBlend = clamp(0.78 - renderState.motion * 10.5 - mutationHistoryDelta, 0, 0.78);
   const historyBlend =
     renderState.historyValid && motionHistoryBlend > 0
-      ? clamp(motionHistoryBlend + (1 - quality.renderScale) * 0.18, 0, 0.82)
+      ? clamp((motionHistoryBlend + (1 - quality.renderScale) * 0.18) * (1 - traversal.voidMix * 0.92), 0, 0.82)
       : 0;
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, historyWriteTarget.framebuffer);
