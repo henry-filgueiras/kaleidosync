@@ -30,6 +30,22 @@
         <Toggle label="Infinity Play" v-model="settings.infinityPlay" />
         <Toggle label="Prefer Lossless Audio" v-model="settings.preferLossless" />
         <RangeInput label="Beat Strength" v-model="settings.beatHorizonStrength" :min="0.35" :max="1.35" :step="0.01" />
+        <div v-if="isFractalMode" class="mode-control">
+          <span class="mode-label">Fractal Layout</span>
+          <div class="mode-options" role="radiogroup" aria-label="Fractal Layout">
+            <button
+              v-for="layout in fractalLayoutModes"
+              :key="layout.value"
+              type="button"
+              class="mode-option"
+              :class="{ active: settings.fractalTraverseLayoutMode === layout.value }"
+              role="radio"
+              :aria-checked="settings.fractalTraverseLayoutMode === layout.value"
+              @click="settings.fractalTraverseLayoutMode = layout.value">
+              {{ layout.label }}
+            </button>
+          </div>
+        </div>
         <RangeInput
           v-if="isFractalMode"
           label="Fractal Strength"
@@ -37,6 +53,13 @@
           :min="0.35"
           :max="1.35"
           :step="0.01" />
+        <RangeInput
+          v-if="isPizzaLayout"
+          label="Pizza Slices"
+          v-model="settings.fractalTraverseSliceCount"
+          :min="6"
+          :max="12"
+          :step="1" />
         <RangeInput label="Veil Strength" v-model="settings.prismVeilStrength" :min="0.35" :max="1.35" :step="0.01" />
         <RangeInput label="Cycle Rate" v-model="settings.cycleRate" :min="0.35" :max="1.4" :step="0.01" />
         <p class="hint">Beat Horizon adds visible pre-hit tension and impact flashes. On Spotify it uses real beat timing; elsewhere it falls back to live peak detection.</p>
@@ -49,14 +72,23 @@
 import { computed } from "vue";
 import { View, Column, Toggle, RangeInput, useRouter } from "@wearesage/vue";
 import { MenuHeader } from "../components";
-import { type VisualizationMode, useVisualizerSettings } from "../stores/visualizer-settings";
+import {
+  type FractalTraverseLayoutMode,
+  type VisualizationMode,
+  useVisualizerSettings,
+} from "../stores/visualizer-settings";
 
 const router = useRouter();
 const settings = useVisualizerSettings();
 const isFractalMode = computed(() => settings.visualizationMode === "fractal-traverse");
+const isPizzaLayout = computed(() => settings.fractalTraverseLayoutMode === "pizza-kaleido");
 const visualizationModes: Array<{ label: string; value: VisualizationMode }> = [
   { label: "Classic", value: "classic" },
   { label: "Fractal Traverse", value: "fractal-traverse" },
+];
+const fractalLayoutModes: Array<{ label: string; value: FractalTraverseLayoutMode }> = [
+  { label: "Full Frame", value: "full-frame" },
+  { label: "Pizza Kaleido", value: "pizza-kaleido" },
 ];
 </script>
 

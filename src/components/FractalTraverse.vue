@@ -15,7 +15,7 @@ import { AudioSource } from "@wearesage/shared";
 import { useViewport } from "@wearesage/vue";
 import { useAudioFeatures } from "../stores/audio-features";
 import { useSources } from "../stores/sources";
-import { useVisualizerSettings } from "../stores/visualizer-settings";
+import { type FractalTraverseLayoutMode, useVisualizerSettings } from "../stores/visualizer-settings";
 
 const VERTEX_SHADER_SOURCE = `
 attribute vec2 aPosition;
@@ -47,9 +47,16 @@ uniform float uTrapScale;
 uniform float uPaletteBias;
 uniform float uVoidFade;
 uniform float uVoidCollapse;
+uniform float uLayoutMode;
+uniform float uSliceCount;
+uniform float uPizzaWarp;
+uniform float uPizzaSpin;
+uniform float uPizzaMorph;
 
 const int MAX_ITERATIONS = 768;
+const float PI = 3.14159265359;
 const float TAU = 6.28318530718;
+const float MOTIF_COUNT = 3.0;
 
 struct FractalSample {
   float escaped;
@@ -69,6 +76,70 @@ vec2 complexPowReal(vec2 z, float power) {
   float poweredRadius = pow(radius, power);
   float poweredAngle = angle * power;
   return vec2(cos(poweredAngle), sin(poweredAngle)) * poweredRadius;
+}
+
+vec2 rotate2d(vec2 point, float angle) {
+  float cosine = cos(angle);
+  float sine = sin(angle);
+  return vec2(
+    point.x * cosine - point.y * sine,
+    point.x * sine + point.y * cosine
+  );
+}
+
+float positiveMod(float value, float modulus) {
+  return mod(mod(value, modulus) + modulus, modulus);
+}
+
+vec2 discUvFromFrag(vec2 fragCoord) {
+  float safeRadius = max(min(uResolution.x, uResolution.y) * 0.5, 0.0001);
+  return (fragCoord - uResolution * 0.5) / safeRadius;
+}
+
+void pizzaSliceData(
+  vec2 fragCoord,
+  out vec2 discUv,
+  out float radius,
+  out float sliceIndex,
+  out float localAngle,
+  out float seamDistance,
+  out float motifIndex,
+  out float sliceAngle
+) {
+  discUv = discUvFromFrag(fragCoord);
+  radius = length(discUv);
+  float sliceCount = max(3.0, floor(uSliceCount + 0.5));
+  sliceAngle = TAU / sliceCount;
+  float wrappedAngle = positiveMod(atan(discUv.y, discUv.x) + PI + uPizzaSpin * 0.14, TAU);
+  sliceIndex = floor(wrappedAngle / sliceAngle);
+  localAngle = wrappedAngle - sliceIndex * sliceAngle;
+  seamDistance = min(localAngle, sliceAngle - localAngle) / max(sliceAngle * 0.5, 0.0001);
+  motifIndex = mod(sliceIndex, MOTIF_COUNT);
+}
+
+void motifParameters(
+  float motifIndex,
+  out float rotationOffset,
+  out float scaleMultiplier,
+  out vec2 centerOffset,
+  out float paletteOffset
+) {
+  if (motifIndex < 0.5) {
+    rotationOffset = -0.22;
+    scaleMultiplier = 0.92;
+    centerOffset = vec2(0.06, -0.08);
+    paletteOffset = -0.025;
+  } else if (motifIndex < 1.5) {
+    rotationOffset = 0.36;
+    scaleMultiplier = 1.14;
+    centerOffset = vec2(-0.08, 0.05);
+    paletteOffset = 0.042;
+  } else {
+    rotationOffset = -0.58;
+    scaleMultiplier = 0.84;
+    centerOffset = vec2(0.03, 0.09);
+    paletteOffset = 0.09;
+  }
 }
 
 FractalSample sampleMutatingMandelbrot(vec2 c) {
@@ -105,21 +176,31 @@ FractalSample sampleMutatingMandelbrot(vec2 c) {
   return result;
 }
 
-vec3 colorize(FractalSample sample, vec2 uv) {
+vec3 colorize(FractalSample sample, vec2 uv, float paletteOffset) {
+  float pizzaMix = clamp(uLayoutMode, 0.0, 1.0);
   float normalized = clamp(sample.smoothValue / float(uMaxIterations), 0.0, 1.0);
   float trapGlow = exp(-sample.trap * (8.2 - uPaletteEnergy * 1.9));
-  float paletteT = uPalettePhase + uPaletteBias + normalized * (0.84 + uTrapMix * 0.06) + trapGlow * (0.14 + uTrapMix * 0.06);
+  float localPaletteWave = uv.x * 0.035 + uv.y * 0.025;
+  float paletteT =
+    uPalettePhase +
+    uPaletteBias +
+    paletteOffset +
+    localPaletteWave +
+    normalized * (0.84 + uTrapMix * 0.06) +
+    trapGlow * (0.14 + uTrapMix * 0.06);
   vec3 wave = 0.5 + 0.5 * cos(TAU * (paletteT + vec3(0.02, 0.22, 0.47)));
   float vignette = clamp(1.08 - dot(uv, uv) * 1.42, 0.68, 1.08);
   vec3 color;
 
   if (sample.escaped < 0.5) {
-    float interior = (0.02 + trapGlow * (0.12 + uTrapMix * 0.06) + uAmbientLift * 0.82) * vignette;
-    color = pow(vec3(interior * 0.11, interior * 0.16, interior * 0.27), vec3(0.96));
+    float interior = (0.02 + trapGlow * (0.12 + uTrapMix * 0.06) + uAmbientLift * mix(0.82, 1.24, pizzaMix)) * vignette;
+    vec3 interiorBase = pow(vec3(interior * 0.11, interior * 0.16, interior * 0.27), vec3(0.96));
+    vec3 interiorGlow = wave * interior * (0.05 + pizzaMix * 0.16);
+    color = interiorBase + interiorGlow;
   } else {
     float boundary = pow(normalized, 1.18);
     float shimmer = 0.16 + uPaletteEnergy + trapGlow * (0.28 + uTrapMix * 0.14);
-    float brightness = (uAmbientLift + boundary * 0.68 + shimmer) * vignette;
+    float brightness = (uAmbientLift + boundary * 0.68 + shimmer) * vignette * (1.0 + pizzaMix * 0.12);
     color = vec3(0.1 + wave.r * 0.9, 0.08 + wave.g * 0.72, 0.18 + wave.b * 0.96) * brightness;
     color = pow(color, vec3(0.94));
   }
@@ -134,25 +215,67 @@ vec3 colorize(FractalSample sample, vec2 uv) {
   return mix(desaturated * (1.0 - uVoidFade * 0.54), vec3(0.003, 0.005, 0.009), voidMask);
 }
 
-FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv) {
+FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float paletteOffset) {
   vec2 centered = fragCoord / uResolution - 0.5;
   paletteUv = vec2(centered.x, centered.y);
+  paletteOffset = 0.0;
+
+  if (uLayoutMode > 0.5) {
+    vec2 discUv;
+    float radius;
+    float sliceIndex;
+    float localAngle;
+    float seamDistance;
+    float motifIndex;
+    float sliceAngle;
+    pizzaSliceData(fragCoord, discUv, radius, sliceIndex, localAngle, seamDistance, motifIndex, sliceAngle);
+
+    float rotationOffset;
+    float motifScale;
+    vec2 motifOffset;
+    float motifPaletteOffset;
+    motifParameters(motifIndex, rotationOffset, motifScale, motifOffset, motifPaletteOffset);
+
+    float centeredAngle = (localAngle - sliceAngle * 0.5) / max(sliceAngle * 0.5, 0.0001);
+    // Mirror across the slice centerline so neighboring wedges share the same motif.
+    float foldedAngle = abs(centeredAngle);
+    float seamBias = 1.0 - seamDistance;
+    float warpEnvelope = smoothstep(0.05, 0.3, radius) * (1.0 - smoothstep(0.82, 1.02, radius));
+    float radialWarp =
+      sin(radius * (8.0 + motifIndex * 2.1) - uPizzaMorph * 1.35 + sliceIndex * 0.74) *
+      (0.065 + uPizzaWarp * 0.14) *
+      warpEnvelope;
+    float lateralWarp =
+      sin(foldedAngle * (9.5 + motifIndex * 1.4) + uPizzaMorph * 0.96 - sliceIndex * 0.58) *
+      (0.08 + uPizzaWarp * 0.15) *
+      warpEnvelope;
+
+    // Sample a broader mirrored local plane than the literal wedge angle so pizza
+    // mode keeps finding visible boundary structure instead of collapsing inward.
+    vec2 motifUv = vec2(
+      (0.5 - foldedAngle) * 1.48 + lateralWarp,
+      (radius - 0.46) * (1.52 + motifIndex * 0.1) + radialWarp
+    );
+    motifUv = rotate2d(
+      motifUv * motifScale + motifOffset + discUv * (0.045 + uPizzaWarp * 0.036),
+      rotationOffset + sin(uPizzaSpin + sliceIndex * 0.31) * 0.12 * uPizzaWarp
+    );
+
+    float sampleSpan = uScale * (0.94 + uPizzaWarp * 0.22);
+    paletteUv = mix(discUv, motifUv * 0.45, 0.42);
+    paletteOffset = motifPaletteOffset + sliceIndex * 0.026 + seamBias * 0.028 + radius * 0.022;
+    return sampleMutatingMandelbrot(uCenter + rotate2d(motifUv, uRotation + uPizzaSpin * 0.07) * sampleSpan);
+  }
+
   centered.x *= uAspect;
-
-  float cosRotation = cos(uRotation);
-  float sinRotation = sin(uRotation);
-  vec2 rotated = vec2(
-    centered.x * cosRotation - centered.y * sinRotation,
-    centered.x * sinRotation + centered.y * cosRotation
-  ) * uScale;
-
-  return sampleMutatingMandelbrot(uCenter + rotated);
+  return sampleMutatingMandelbrot(uCenter + rotate2d(centered, uRotation) * uScale);
 }
 
 vec3 shadeAtFrag(vec2 fragCoord) {
   vec2 paletteUv;
-  FractalSample sample = sampleAtFrag(fragCoord, paletteUv);
-  return colorize(sample, paletteUv);
+  float paletteOffset;
+  FractalSample sample = sampleAtFrag(fragCoord, paletteUv, paletteOffset);
+  return colorize(sample, paletteUv, paletteOffset);
 }
 
 float normalizedSmooth(FractalSample sample) {
@@ -161,8 +284,9 @@ float normalizedSmooth(FractalSample sample) {
 
 float sampleBoundaryMetric(vec2 fragCoord, FractalSample centerSample) {
   vec2 ignoredUv;
-  FractalSample probeX = sampleAtFrag(fragCoord + vec2(0.9, 0.0), ignoredUv);
-  FractalSample probeY = sampleAtFrag(fragCoord + vec2(0.0, 0.9), ignoredUv);
+  float ignoredOffset;
+  FractalSample probeX = sampleAtFrag(fragCoord + vec2(0.9, 0.0), ignoredUv, ignoredOffset);
+  FractalSample probeY = sampleAtFrag(fragCoord + vec2(0.0, 0.9), ignoredUv, ignoredOffset);
   float centerSmooth = normalizedSmooth(centerSample);
   float smoothGradient = abs(centerSmooth - normalizedSmooth(probeX)) + abs(centerSmooth - normalizedSmooth(probeY));
   float escapeGradient = abs(centerSample.escaped - probeX.escaped) + abs(centerSample.escaped - probeY.escaped);
@@ -172,11 +296,42 @@ float sampleBoundaryMetric(vec2 fragCoord, FractalSample centerSample) {
   return clamp(smoothGradient * 1.7 + escapeGradient * 0.45 + trapGradient * 0.9, 0.0, 1.0);
 }
 
+vec3 applyPizzaComposition(vec3 color, vec2 fragCoord) {
+  vec2 discUv;
+  float radius;
+  float sliceIndex;
+  float localAngle;
+  float seamDistance;
+  float motifIndex;
+  float sliceAngle;
+  pizzaSliceData(fragCoord, discUv, radius, sliceIndex, localAngle, seamDistance, motifIndex, sliceAngle);
+
+  float discMask = 1.0 - smoothstep(0.985, 1.035, radius);
+  float seamShadow = (1.0 - smoothstep(0.04, 0.2, seamDistance)) * smoothstep(0.1, 0.92, radius);
+  float seamGlow = (1.0 - smoothstep(0.0, 0.1, seamDistance)) * smoothstep(0.16, 0.92, radius);
+  float hubMask = 1.0 - smoothstep(0.045, 0.17, radius);
+  float hubRing = smoothstep(0.08, 0.11, radius) * (1.0 - smoothstep(0.15, 0.19, radius));
+  float rim = smoothstep(0.78, 0.95, radius) * (1.0 - smoothstep(0.98, 1.04, radius));
+  vec3 background = vec3(0.004, 0.006, 0.011);
+  vec3 seamColor = vec3(0.024, 0.018, 0.03) + vec3(0.08, 0.055, 0.04) * (0.22 + uPaletteEnergy * 0.16);
+  vec3 crustGlow = vec3(0.16, 0.11, 0.08) * (0.06 + uPaletteEnergy * 0.05);
+  vec3 hubGlow = vec3(0.11, 0.1, 0.13) * (0.08 + uAmbientLift * 0.12);
+
+  color *= 1.0 - seamShadow * 0.14;
+  color = mix(color, seamColor, seamGlow * 0.12);
+  color += crustGlow * rim;
+  color = mix(color, background, hubMask * 0.58);
+  color += hubGlow * hubRing;
+
+  return mix(background, color, discMask);
+}
+
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 paletteUv;
-  FractalSample centerSample = sampleAtFrag(frag, paletteUv);
-  vec3 color = colorize(centerSample, paletteUv);
+  float paletteOffset;
+  FractalSample centerSample = sampleAtFrag(frag, paletteUv, paletteOffset);
+  vec3 color = colorize(centerSample, paletteUv, paletteOffset);
 
   if (uStableAA > 0.01) {
     vec3 paired = 0.5 * (
@@ -197,6 +352,10 @@ void main() {
       );
       color = mix(color, refined, clamp(boundaryWeight * (0.52 + uStableAA * 0.28), 0.0, 0.88));
     }
+  }
+
+  if (uLayoutMode > 0.5) {
+    color = applyPizzaComposition(color, frag);
   }
 
   gl_FragColor = vec4(color, 1.0);
@@ -450,6 +609,11 @@ type FractalUniforms = {
   paletteBias: WebGLUniformLocation | null;
   voidFade: WebGLUniformLocation | null;
   voidCollapse: WebGLUniformLocation | null;
+  layoutMode: WebGLUniformLocation | null;
+  sliceCount: WebGLUniformLocation | null;
+  pizzaWarp: WebGLUniformLocation | null;
+  pizzaSpin: WebGLUniformLocation | null;
+  pizzaMorph: WebGLUniformLocation | null;
 };
 
 type CompositeUniforms = {
@@ -998,6 +1162,18 @@ const visible = computed(() => {
 
 const strength = computed(() => {
   return clamp(Number(settings.fractalTraverseStrength) || 0.84, 0.35, 1.35);
+});
+
+const fractalLayoutMode = computed<FractalTraverseLayoutMode>(() => {
+  return settings.fractalTraverseLayoutMode ?? "full-frame";
+});
+
+const isPizzaLayout = computed(() => {
+  return fractalLayoutMode.value === "pizza-kaleido";
+});
+
+const pizzaSliceCount = computed(() => {
+  return clamp(Math.round(Number(settings.fractalTraverseSliceCount) || 8), 6, 12);
 });
 
 function calculateSegmentDuration(from: FractalPoi, to: FractalPoi) {
@@ -1565,6 +1741,11 @@ function ensureRenderer() {
     paletteBias: context.getUniformLocation(fractalProgram, "uPaletteBias"),
     voidFade: context.getUniformLocation(fractalProgram, "uVoidFade"),
     voidCollapse: context.getUniformLocation(fractalProgram, "uVoidCollapse"),
+    layoutMode: context.getUniformLocation(fractalProgram, "uLayoutMode"),
+    sliceCount: context.getUniformLocation(fractalProgram, "uSliceCount"),
+    pizzaWarp: context.getUniformLocation(fractalProgram, "uPizzaWarp"),
+    pizzaSpin: context.getUniformLocation(fractalProgram, "uPizzaSpin"),
+    pizzaMorph: context.getUniformLocation(fractalProgram, "uPizzaMorph"),
   };
   renderState.compositeUniforms = {
     currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
@@ -2204,17 +2385,45 @@ function renderFractal(deltaSeconds: number) {
   const compositeUniforms = renderState.compositeUniforms;
   const presentUniforms = renderState.presentUniforms;
   const aspectRatio = renderState.displayWidth / Math.max(renderState.displayHeight, 1);
-  const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(traversal.camera.scale, 0.000001)));
+  const currentPoi = family.pointsOfInterest[traversal.currentIndex];
+  const nextPoi = family.pointsOfInterest[traversal.nextIndex];
+  const pizzaPathMix = smoothStep(clamp(traversal.progress, 0, 1));
+  const pizzaAnchor = {
+    x: lerp(currentPoi.center.x, nextPoi.center.x, pizzaPathMix * 0.34),
+    y: lerp(currentPoi.center.y, nextPoi.center.y, pizzaPathMix * 0.34),
+  };
+  const shaderCenter = isPizzaLayout.value
+    ? {
+        x: lerp(pizzaAnchor.x, traversal.camera.center.x, 0.18),
+        y: lerp(pizzaAnchor.y, traversal.camera.center.y, 0.18),
+      }
+    : traversal.camera.center;
+  const shaderScale = isPizzaLayout.value
+    ? clamp(
+        Math.exp(lerp(Math.log(Math.max(currentPoi.scale, 0.02)), Math.log(Math.max(nextPoi.scale, 0.02)), pizzaPathMix)) * 4.8,
+        0.28,
+        1.05
+      )
+    : traversal.camera.scale;
+  const renderViewport: FractalViewport = {
+    center: {
+      x: shaderCenter.x,
+      y: shaderCenter.y,
+    },
+    scale: shaderScale,
+    rotation: traversal.camera.rotation,
+  };
+  const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(renderViewport.scale, 0.000001)));
   const dprBias = Math.max(0, Math.sqrt(renderState.dpr) - 1);
   const structuralBias = (fractalMutation.parameters.power - 2) * 0.18 + fractalMutation.parameters.trapMix * 0.05;
   const centerMotion = renderState.lastCamera
-    ? distance(renderState.lastCamera.center, traversal.camera.center) / Math.max(traversal.camera.scale, 0.000001)
+    ? distance(renderState.lastCamera.center, renderViewport.center) / Math.max(renderViewport.scale, 0.000001)
     : 0;
   const zoomMotion = renderState.lastCamera
-    ? Math.abs(Math.log(renderState.lastCamera.scale / traversal.camera.scale))
+    ? Math.abs(Math.log(renderState.lastCamera.scale / renderViewport.scale))
     : 0;
   const rotationMotion = renderState.lastCamera
-    ? Math.abs(angleDelta(traversal.camera.rotation, renderState.lastCamera.rotation))
+    ? Math.abs(angleDelta(renderViewport.rotation, renderState.lastCamera.rotation))
     : 0;
   const motionTarget = centerMotion + zoomMotion * 1.8 + rotationMotion * 0.55;
 
@@ -2227,6 +2436,17 @@ function renderFractal(deltaSeconds: number) {
   const quality = getQualityProfile(renderState.refinement);
   const currentWidth = Math.max(1, Math.round(renderState.displayWidth * quality.renderScale));
   const currentHeight = Math.max(1, Math.round(renderState.displayHeight * quality.renderScale));
+  const pizzaLayoutMix = isPizzaLayout.value ? 1 : 0;
+  const pizzaWarp = isPizzaLayout.value
+    ? clamp(0.14 + audio.bend * 0.1 + audio.highDrive * 0.06 + audio.spectralFlux * 0.05, 0.14, 0.42)
+    : 0;
+  const pizzaSpin = traversal.camera.rotation * 0.8 + traversal.palettePhase * TAU * 0.18 + (audio.temperature - 0.5) * 0.9;
+  const pizzaMorph =
+    traversal.bendPhase * 0.42 +
+    traversal.driftPhase * 0.28 +
+    fractalMutation.depth * 2.4 +
+    audio.zoom * 0.36 +
+    audio.spectralFlux * 0.7;
 
   if (
     !ensureRenderTarget(gl, renderState.currentTarget, currentWidth, currentHeight, gl.LINEAR) ||
@@ -2240,17 +2460,17 @@ function renderFractal(deltaSeconds: number) {
   const currentAspectRatio = currentWidth / Math.max(currentHeight, 1);
   const stableAA = clamp(quality.stableAA * (0.42 + stabilityTarget * 0.58), 0, 1);
   const maxIterations = family.getMaxIterations(
-    traversal.camera.scale,
-    clamp(quality.iterationBias + dprBias + zoomDepth * 0.08 + structuralBias - traversal.voidMix * 0.42, -0.4, 1.6)
+    renderViewport.scale,
+    clamp(quality.iterationBias + dprBias + zoomDepth * 0.08 + structuralBias - traversal.voidMix * 0.42 - pizzaLayoutMix * 0.12, -0.4, 1.6)
   );
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, renderState.currentTarget.framebuffer);
   gl.viewport(0, 0, currentWidth, currentHeight);
   gl.useProgram(renderState.fractalProgram);
   gl.uniform2f(fractalUniforms.resolution, currentWidth, currentHeight);
-  gl.uniform2f(fractalUniforms.center, traversal.camera.center.x, traversal.camera.center.y);
-  gl.uniform1f(fractalUniforms.scale, traversal.camera.scale);
-  gl.uniform1f(fractalUniforms.rotation, traversal.camera.rotation);
+  gl.uniform2f(fractalUniforms.center, renderViewport.center.x, renderViewport.center.y);
+  gl.uniform1f(fractalUniforms.scale, renderViewport.scale);
+  gl.uniform1f(fractalUniforms.rotation, renderViewport.rotation);
   gl.uniform1f(fractalUniforms.aspect, currentAspectRatio);
   const palettePhase =
     traversal.palettePhase + family.pointsOfInterest[traversal.currentIndex].hueOffset + (audio.temperature - 0.5) * 0.08;
@@ -2265,12 +2485,17 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.paletteBias, fractalMutation.parameters.paletteBias);
   gl.uniform1f(fractalUniforms.voidFade, traversal.voidMix);
   gl.uniform1f(fractalUniforms.voidCollapse, traversal.voidCollapse);
+  gl.uniform1f(fractalUniforms.layoutMode, pizzaLayoutMix);
+  gl.uniform1f(fractalUniforms.sliceCount, pizzaSliceCount.value);
+  gl.uniform1f(fractalUniforms.pizzaWarp, pizzaWarp);
+  gl.uniform1f(fractalUniforms.pizzaSpin, pizzaSpin);
+  gl.uniform1f(fractalUniforms.pizzaMorph, pizzaMorph);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
   const historyWriteIndex = 1 - renderState.historyReadIndex;
   const historyWriteTarget = renderState.historyTargets[historyWriteIndex];
-  const historyCamera = renderState.historyCamera ?? traversal.camera;
+  const historyCamera = renderState.historyCamera ?? renderViewport;
   const historyParameters = renderState.historyFractalParameters ?? fractalMutation.parameters;
   const mutationHistoryDelta =
     Math.abs(fractalMutation.parameters.power - historyParameters.power) * 0.32 +
@@ -2279,7 +2504,7 @@ function renderFractal(deltaSeconds: number) {
     Math.abs(fractalMutation.parameters.paletteBias - historyParameters.paletteBias) * 0.48;
   const motionHistoryBlend = clamp(0.78 - renderState.motion * 10.5 - mutationHistoryDelta, 0, 0.78);
   const historyBlend =
-    renderState.historyValid && motionHistoryBlend > 0
+    !isPizzaLayout.value && renderState.historyValid && motionHistoryBlend > 0
       ? clamp((motionHistoryBlend + (1 - quality.renderScale) * 0.18) * (1 - traversal.voidMix * 0.92), 0, 0.82)
       : 0;
 
@@ -2293,9 +2518,9 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1i(compositeUniforms.currentTexture, 0);
   gl.uniform1i(compositeUniforms.historyTexture, 1);
   gl.uniform2f(compositeUniforms.currentTexelSize, 1 / currentWidth, 1 / currentHeight);
-  gl.uniform2f(compositeUniforms.currentCenter, traversal.camera.center.x, traversal.camera.center.y);
-  gl.uniform1f(compositeUniforms.currentScale, traversal.camera.scale);
-  gl.uniform1f(compositeUniforms.currentRotation, traversal.camera.rotation);
+  gl.uniform2f(compositeUniforms.currentCenter, renderViewport.center.x, renderViewport.center.y);
+  gl.uniform1f(compositeUniforms.currentScale, renderViewport.scale);
+  gl.uniform1f(compositeUniforms.currentRotation, renderViewport.rotation);
   gl.uniform1f(compositeUniforms.currentAspect, aspectRatio);
   gl.uniform2f(compositeUniforms.previousCenter, historyCamera.center.x, historyCamera.center.y);
   gl.uniform1f(compositeUniforms.previousScale, historyCamera.scale);
@@ -2315,9 +2540,9 @@ function renderFractal(deltaSeconds: number) {
   gl.bindTexture(gl.TEXTURE_2D, null);
   renderState.historyReadIndex = historyWriteIndex;
   renderState.historyValid = true;
-  renderState.historyCamera = copyViewport(traversal.camera);
+  renderState.historyCamera = copyViewport(renderViewport);
   renderState.historyFractalParameters = copyFractalParameters(fractalMutation.parameters);
-  renderState.lastCamera = copyViewport(traversal.camera);
+  renderState.lastCamera = copyViewport(renderViewport);
 }
 
 function animate(now: number) {
@@ -2402,6 +2627,30 @@ watch(
     resetFractalMutationState();
     resetTemporalState();
     lastFrameTime = 0;
+  }
+);
+
+watch(
+  () => fractalLayoutMode.value,
+  () => {
+    resetTemporalState();
+    interest.lowInterestTime = 0;
+    interest.focusTargetHoldUntil = 0;
+    traversal.voidMix = 0;
+    traversal.voidCollapse = 0;
+    traversal.transitionScaleMultiplier = 1;
+    traversal.transitionRotationOffset = 0;
+
+    if (traversal.mode !== "explore") {
+      setTraversalMode("explore", 0);
+    }
+
+    lastFrameTime = 0;
+    lastRenderTime = 0;
+
+    if (!visible.value) return;
+
+    renderFractal(1 / 60);
   }
 );
 

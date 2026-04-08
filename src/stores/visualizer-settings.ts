@@ -3,6 +3,8 @@ import { ref, watch } from "vue";
 
 export const VISUALIZATION_MODES = ["classic", "fractal-traverse"] as const;
 export type VisualizationMode = (typeof VISUALIZATION_MODES)[number];
+export const FRACTAL_TRAVERSE_LAYOUT_MODES = ["full-frame", "pizza-kaleido"] as const;
+export type FractalTraverseLayoutMode = (typeof FRACTAL_TRAVERSE_LAYOUT_MODES)[number];
 
 function createPersistedBoolean(key: string, fallback: boolean) {
   const value = ref(fallback);
@@ -94,6 +96,12 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     }
   );
   const fractalTraverseStrength = createPersistedNumber("kaleidosync.fractalTraverseStrength", 0.84);
+  const fractalTraverseLayoutMode = createPersistedString<FractalTraverseLayoutMode>(
+    "kaleidosync.fractalTraverseLayoutMode",
+    "full-frame",
+    FRACTAL_TRAVERSE_LAYOUT_MODES
+  );
+  const fractalTraverseSliceCount = createPersistedNumber("kaleidosync.fractalTraverseSliceCount", 8);
 
   return {
     disableFlashing,
@@ -111,6 +119,8 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     beatHorizonStrength,
     visualizationMode,
     fractalTraverseStrength,
+    fractalTraverseLayoutMode,
+    fractalTraverseSliceCount,
   };
 });
 
