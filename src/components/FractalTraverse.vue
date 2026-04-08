@@ -52,11 +52,13 @@ uniform float uSliceCount;
 uniform float uPizzaWarp;
 uniform float uPizzaSpin;
 uniform float uPizzaMorph;
+uniform float uSymmetryGroup;
+uniform float uSymmetryMode;
+uniform float uSymmetryStrength;
 
 const int MAX_ITERATIONS = 768;
 const float PI = 3.14159265359;
 const float TAU = 6.28318530718;
-const float MOTIF_COUNT = 3.0;
 
 struct FractalSample {
   float escaped;
@@ -96,50 +98,28 @@ vec2 discUvFromFrag(vec2 fragCoord) {
   return (fragCoord - uResolution * 0.5) / safeRadius;
 }
 
-void pizzaSliceData(
+void pizzaSymmetryData(
   vec2 fragCoord,
   out vec2 discUv,
   out float radius,
   out float sliceIndex,
-  out float localAngle,
+  out float canonicalAngle,
   out float seamDistance,
-  out float motifIndex,
-  out float sliceAngle
+  out float sliceAngle,
+  out float slicePhase
 ) {
   discUv = discUvFromFrag(fragCoord);
   radius = length(discUv);
-  float sliceCount = max(3.0, floor(uSliceCount + 0.5));
-  sliceAngle = TAU / sliceCount;
+  float order = max(3.0, floor(uSliceCount + 0.5));
+  float modeIndex = max(1.0, floor(uSymmetryMode + 0.5));
+  sliceAngle = TAU / order;
   float wrappedAngle = positiveMod(atan(discUv.y, discUv.x) + PI + uPizzaSpin * 0.14, TAU);
   sliceIndex = floor(wrappedAngle / sliceAngle);
-  localAngle = wrappedAngle - sliceIndex * sliceAngle;
-  seamDistance = min(localAngle, sliceAngle - localAngle) / max(sliceAngle * 0.5, 0.0001);
-  motifIndex = mod(sliceIndex, MOTIF_COUNT);
-}
-
-void motifParameters(
-  float motifIndex,
-  out float rotationOffset,
-  out float scaleMultiplier,
-  out vec2 centerOffset,
-  out float paletteOffset
-) {
-  if (motifIndex < 0.5) {
-    rotationOffset = -0.22;
-    scaleMultiplier = 0.92;
-    centerOffset = vec2(0.06, -0.08);
-    paletteOffset = -0.025;
-  } else if (motifIndex < 1.5) {
-    rotationOffset = 0.36;
-    scaleMultiplier = 1.14;
-    centerOffset = vec2(-0.08, 0.05);
-    paletteOffset = 0.042;
-  } else {
-    rotationOffset = -0.58;
-    scaleMultiplier = 0.84;
-    centerOffset = vec2(0.03, 0.09);
-    paletteOffset = 0.09;
-  }
+  float reducedAngle = wrappedAngle - sliceIndex * sliceAngle;
+  float centeredAngle = reducedAngle - sliceAngle * 0.5;
+  seamDistance = min(reducedAngle, sliceAngle - reducedAngle) / max(sliceAngle * 0.5, 0.0001);
+  canonicalAngle = uSymmetryGroup > 0.5 ? abs(centeredAngle) : centeredAngle;
+  slicePhase = TAU * modeIndex * sliceIndex / order;
 }
 
 FractalSample sampleMutatingMandelbrot(vec2 c) {
@@ -224,47 +204,47 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float palette
     vec2 discUv;
     float radius;
     float sliceIndex;
-    float localAngle;
+    float canonicalAngle;
     float seamDistance;
-    float motifIndex;
     float sliceAngle;
-    pizzaSliceData(fragCoord, discUv, radius, sliceIndex, localAngle, seamDistance, motifIndex, sliceAngle);
+    float slicePhase;
+    pizzaSymmetryData(fragCoord, discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
 
-    float rotationOffset;
-    float motifScale;
-    vec2 motifOffset;
-    float motifPaletteOffset;
-    motifParameters(motifIndex, rotationOffset, motifScale, motifOffset, motifPaletteOffset);
-
-    float centeredAngle = (localAngle - sliceAngle * 0.5) / max(sliceAngle * 0.5, 0.0001);
-    // Mirror across the slice centerline so neighboring wedges share the same motif.
-    float foldedAngle = abs(centeredAngle);
     float seamBias = 1.0 - seamDistance;
+    float wedgeCoord = canonicalAngle / max(sliceAngle * 0.5, 0.0001);
+    float phaseCos = cos(slicePhase);
+    float phaseSin = sin(slicePhase);
     float warpEnvelope = smoothstep(0.05, 0.3, radius) * (1.0 - smoothstep(0.82, 1.02, radius));
     float radialWarp =
-      sin(radius * (8.0 + motifIndex * 2.1) - uPizzaMorph * 1.35 + sliceIndex * 0.74) *
-      (0.065 + uPizzaWarp * 0.14) *
+      sin(radius * (7.6 + phaseCos * 1.2) - uPizzaMorph * (1.12 + phaseSin * 0.12) + slicePhase) *
+      (0.055 + uPizzaWarp * (0.1 + uSymmetryStrength * 0.04)) *
       warpEnvelope;
-    float lateralWarp =
-      sin(foldedAngle * (9.5 + motifIndex * 1.4) + uPizzaMorph * 0.96 - sliceIndex * 0.58) *
-      (0.08 + uPizzaWarp * 0.15) *
+    float angularWarp =
+      sin(wedgeCoord * (4.8 + phaseSin * 0.8) + uPizzaMorph * 0.86 + slicePhase * 0.8) *
+      (0.07 + uPizzaWarp * (0.12 + uSymmetryStrength * 0.04)) *
       warpEnvelope;
 
-    // Sample a broader mirrored local plane than the literal wedge angle so pizza
-    // mode keeps finding visible boundary structure instead of collapsing inward.
-    vec2 motifUv = vec2(
-      (0.5 - foldedAngle) * 1.48 + lateralWarp,
-      (radius - 0.46) * (1.52 + motifIndex * 0.1) + radialWarp
+    // The whole disc is generated from one wedge domain; slice content changes only
+    // through the symmetry phase k -> exp(i * 2pi * m * k / n).
+    vec2 wedgeUv = vec2(
+      wedgeCoord * (0.92 + uSymmetryStrength * 0.16 + phaseCos * 0.05) + angularWarp,
+      (radius - 0.47) * (1.42 + phaseSin * 0.12) + radialWarp
     );
-    motifUv = rotate2d(
-      motifUv * motifScale + motifOffset + discUv * (0.045 + uPizzaWarp * 0.036),
-      rotationOffset + sin(uPizzaSpin + sliceIndex * 0.31) * 0.12 * uPizzaWarp
+    wedgeUv = rotate2d(
+      wedgeUv * (0.9 + uSymmetryStrength * 0.12 + phaseCos * 0.08) +
+      vec2(phaseCos, phaseSin) * (0.028 + uSymmetryStrength * 0.028) +
+      discUv * (0.034 + uPizzaWarp * 0.028),
+      phaseSin * (0.22 + uSymmetryStrength * 0.18) + phaseCos * uPizzaMorph * 0.035
     );
 
-    float sampleSpan = uScale * (0.94 + uPizzaWarp * 0.22);
-    paletteUv = mix(discUv, motifUv * 0.45, 0.42);
-    paletteOffset = motifPaletteOffset + sliceIndex * 0.026 + seamBias * 0.028 + radius * 0.022;
-    return sampleMutatingMandelbrot(uCenter + rotate2d(motifUv, uRotation + uPizzaSpin * 0.07) * sampleSpan);
+    float sampleSpan = uScale * (0.84 + uPizzaWarp * 0.16 + uSymmetryStrength * 0.12);
+    paletteUv = mix(discUv, wedgeUv * 0.44, 0.4);
+    paletteOffset =
+      (phaseCos * 0.045 + phaseSin * 0.022) * uSymmetryStrength +
+      seamBias * 0.024 +
+      radius * 0.02 +
+      mix(wedgeCoord * 0.006, wedgeCoord * 0.012, step(0.5, uSymmetryGroup));
+    return sampleMutatingMandelbrot(uCenter + rotate2d(wedgeUv, uRotation + uPizzaSpin * 0.07) * sampleSpan);
   }
 
   centered.x *= uAspect;
@@ -300,11 +280,11 @@ vec3 applyPizzaComposition(vec3 color, vec2 fragCoord) {
   vec2 discUv;
   float radius;
   float sliceIndex;
-  float localAngle;
+  float canonicalAngle;
   float seamDistance;
-  float motifIndex;
   float sliceAngle;
-  pizzaSliceData(fragCoord, discUv, radius, sliceIndex, localAngle, seamDistance, motifIndex, sliceAngle);
+  float slicePhase;
+  pizzaSymmetryData(fragCoord, discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
 
   float discMask = 1.0 - smoothstep(0.985, 1.035, radius);
   float seamShadow = (1.0 - smoothstep(0.04, 0.2, seamDistance)) * smoothstep(0.1, 0.92, radius);
@@ -510,6 +490,13 @@ type AudioResponseState = {
 
 type TraversalMode = "explore" | "dissolve" | "transit" | "reveal";
 type VoidTransitionStyle = "fade" | "zoom" | "turn";
+type PizzaSymmetryGroup = "cyclic" | "dihedral";
+type PizzaSymmetryState = {
+  group: PizzaSymmetryGroup;
+  order: number;
+  modeIndex: number;
+  strength: number;
+};
 
 type TraversalState = {
   currentIndex: number;
@@ -614,6 +601,9 @@ type FractalUniforms = {
   pizzaWarp: WebGLUniformLocation | null;
   pizzaSpin: WebGLUniformLocation | null;
   pizzaMorph: WebGLUniformLocation | null;
+  symmetryGroup: WebGLUniformLocation | null;
+  symmetryMode: WebGLUniformLocation | null;
+  symmetryStrength: WebGLUniformLocation | null;
 };
 
 type CompositeUniforms = {
@@ -1176,6 +1166,19 @@ const isPizzaLayout = computed(() => {
 const pizzaSliceCount = computed(() => {
   return clamp(Math.round(Number(settings.fractalTraverseSliceCount) || 8), 6, 12);
 });
+
+function getPizzaSymmetryState(): PizzaSymmetryState {
+  const order = pizzaSliceCount.value;
+  const maxModeIndex = Math.max(1, Math.floor(order * 0.5) - 1);
+
+  return {
+    group: "dihedral",
+    order,
+    modeIndex: clamp(2, 1, maxModeIndex),
+    // Strength lets audio lean on the symmetry warp without breaking the group structure.
+    strength: clamp(0.74 + audio.highDrive * 0.08 + audio.spectralFlux * 0.12, 0.68, 0.94),
+  };
+}
 
 function calculateSegmentDuration(from: FractalPoi, to: FractalPoi) {
   // Blend spatial and zoom distance so transitions read as travel, not cuts.
@@ -1748,6 +1751,9 @@ function ensureRenderer() {
     pizzaWarp: context.getUniformLocation(fractalProgram, "uPizzaWarp"),
     pizzaSpin: context.getUniformLocation(fractalProgram, "uPizzaSpin"),
     pizzaMorph: context.getUniformLocation(fractalProgram, "uPizzaMorph"),
+    symmetryGroup: context.getUniformLocation(fractalProgram, "uSymmetryGroup"),
+    symmetryMode: context.getUniformLocation(fractalProgram, "uSymmetryMode"),
+    symmetryStrength: context.getUniformLocation(fractalProgram, "uSymmetryStrength"),
   };
   renderState.compositeUniforms = {
     currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
@@ -2389,6 +2395,7 @@ function renderFractal(deltaSeconds: number) {
   const aspectRatio = renderState.displayWidth / Math.max(renderState.displayHeight, 1);
   const currentPoi = family.pointsOfInterest[traversal.currentIndex];
   const nextPoi = family.pointsOfInterest[traversal.nextIndex];
+  const pizzaSymmetry = getPizzaSymmetryState();
   const pizzaPathMix = smoothStep(clamp(traversal.progress, 0, 1));
   const pizzaAnchor = {
     x: lerp(currentPoi.center.x, nextPoi.center.x, pizzaPathMix * 0.34),
@@ -2440,7 +2447,7 @@ function renderFractal(deltaSeconds: number) {
   const currentHeight = Math.max(1, Math.round(renderState.displayHeight * quality.renderScale));
   const pizzaLayoutMix = isPizzaLayout.value ? 1 : 0;
   const pizzaWarp = isPizzaLayout.value
-    ? clamp(0.14 + audio.bend * 0.1 + audio.highDrive * 0.06 + audio.spectralFlux * 0.05, 0.14, 0.42)
+    ? clamp(0.14 + audio.bend * 0.1 + audio.highDrive * 0.06 + audio.spectralFlux * 0.05 + pizzaSymmetry.strength * 0.04, 0.14, 0.42)
     : 0;
   const pizzaSpin = traversal.camera.rotation * 0.8 + traversal.palettePhase * TAU * 0.18 + (audio.temperature - 0.5) * 0.9;
   const pizzaMorph =
@@ -2488,10 +2495,13 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.voidFade, traversal.voidMix);
   gl.uniform1f(fractalUniforms.voidCollapse, traversal.voidCollapse);
   gl.uniform1f(fractalUniforms.layoutMode, pizzaLayoutMix);
-  gl.uniform1f(fractalUniforms.sliceCount, pizzaSliceCount.value);
+  gl.uniform1f(fractalUniforms.sliceCount, pizzaSymmetry.order);
   gl.uniform1f(fractalUniforms.pizzaWarp, pizzaWarp);
   gl.uniform1f(fractalUniforms.pizzaSpin, pizzaSpin);
   gl.uniform1f(fractalUniforms.pizzaMorph, pizzaMorph);
+  gl.uniform1f(fractalUniforms.symmetryGroup, pizzaSymmetry.group === "dihedral" ? 1 : 0);
+  gl.uniform1f(fractalUniforms.symmetryMode, pizzaSymmetry.modeIndex);
+  gl.uniform1f(fractalUniforms.symmetryStrength, pizzaSymmetry.strength);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
