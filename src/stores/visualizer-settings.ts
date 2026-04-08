@@ -102,6 +102,10 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     FRACTAL_TRAVERSE_LAYOUT_MODES
   );
   const fractalTraverseSliceCount = createPersistedNumber("kaleidosync.fractalTraverseSliceCount", 8);
+  const fractalTraversePizzaCarveDepth = createPersistedNumber("kaleidosync.fractalTraversePizzaCarveDepth", 1);
+  const fractalTraversePizzaGrooveStrength = createPersistedNumber("kaleidosync.fractalTraversePizzaGrooveStrength", 0.72);
+  const fractalTraversePizzaCrustProtection = createPersistedNumber("kaleidosync.fractalTraversePizzaCrustProtection", 0.82);
+  const fractalTraversePizzaValleyGlow = createPersistedNumber("kaleidosync.fractalTraversePizzaValleyGlow", 0.38);
 
   return {
     disableFlashing,
@@ -121,6 +125,10 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     fractalTraverseStrength,
     fractalTraverseLayoutMode,
     fractalTraverseSliceCount,
+    fractalTraversePizzaCarveDepth,
+    fractalTraversePizzaGrooveStrength,
+    fractalTraversePizzaCrustProtection,
+    fractalTraversePizzaValleyGlow,
   };
 });
 

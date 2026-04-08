@@ -60,6 +60,34 @@
           :min="6"
           :max="12"
           :step="1" />
+        <RangeInput
+          v-if="isPizzaLayout"
+          label="Carve Depth"
+          v-model="settings.fractalTraversePizzaCarveDepth"
+          :min="0.55"
+          :max="1.45"
+          :step="0.01" />
+        <RangeInput
+          v-if="isPizzaLayout"
+          label="Groove Cut"
+          v-model="settings.fractalTraversePizzaGrooveStrength"
+          :min="0.2"
+          :max="1.25"
+          :step="0.01" />
+        <RangeInput
+          v-if="isPizzaLayout"
+          label="Crust Shield"
+          v-model="settings.fractalTraversePizzaCrustProtection"
+          :min="0.68"
+          :max="0.9"
+          :step="0.01" />
+        <RangeInput
+          v-if="isPizzaLayout"
+          label="Valley Glow"
+          v-model="settings.fractalTraversePizzaValleyGlow"
+          :min="0"
+          :max="0.85"
+          :step="0.01" />
         <RangeInput label="Veil Strength" v-model="settings.prismVeilStrength" :min="0.35" :max="1.35" :step="0.01" />
         <RangeInput label="Cycle Rate" v-model="settings.cycleRate" :min="0.35" :max="1.4" :step="0.01" />
         <p class="hint">Beat Horizon adds visible pre-hit tension and impact flashes. On Spotify it uses real beat timing; elsewhere it falls back to live peak detection.</p>

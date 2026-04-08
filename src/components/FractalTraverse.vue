@@ -18,6 +18,9 @@ import { usePulse } from "../stores/pulse";
 import { useSources } from "../stores/sources";
 import { type FractalTraverseLayoutMode, useVisualizerSettings } from "../stores/visualizer-settings";
 
+const PIZZA_LORENZ_POINT_COUNT = 32;
+const PIZZA_TERRAIN_MAX_ITERATIONS = 64;
+
 const VERTEX_SHADER_SOURCE = `
 attribute vec2 aPosition;
 varying vec2 vUv;
@@ -67,8 +70,15 @@ uniform vec3 uCoinSpinAxis;
 uniform float uCoinShimmer;
 uniform float uPizzaBackdropRotation;
 uniform float uPizzaBackdropTorsion;
+uniform float uPizzaCarveStrength;
+uniform float uPizzaGrooveStrength;
+uniform float uPizzaCrustProtection;
+uniform float uPizzaValleyGlow;
+uniform vec2 uLorenzPoints[${PIZZA_LORENZ_POINT_COUNT}];
 
 const int MAX_ITERATIONS = 768;
+const int PIZZA_LORENZ_POINT_COUNT = ${PIZZA_LORENZ_POINT_COUNT};
+const int PIZZA_TERRAIN_MAX_ITERATIONS = ${PIZZA_TERRAIN_MAX_ITERATIONS};
 const float PI = 3.14159265359;
 const float TAU = 6.28318530718;
 
@@ -93,6 +103,19 @@ struct CoinProjection {
   float surfaceFrontFacing;
   float sideHeight;
   float thickness;
+};
+
+struct PizzaTerrainSample {
+  float height;
+  float baseHeight;
+  float interiorMask;
+  float crustMask;
+  float valley;
+  float ridge;
+  float wetness;
+  float sauce;
+  float glow;
+  float groove;
 };
 
 vec2 complexPowReal(vec2 z, float power) {
@@ -250,6 +273,432 @@ FractalSample sampleMutatingMandelbrot(vec2 c) {
   result.smoothValue = smoothValue;
   result.trap = trap;
   return result;
+}
+
+float pizzaRadiusValue() {
+  return 0.94;
+}
+
+float pizzaBottomHeight() {
+  return -0.16;
+}
+
+float pizzaBoardHeight() {
+  return -0.24;
+}
+
+float pizzaSideTopHeight() {
+  return 0.115;
+}
+
+vec2 clampPizzaDiscUv(vec2 discUv) {
+  float radius = length(discUv);
+
+  if (radius > 0.995) {
+    return discUv * (0.995 / radius);
+  }
+
+  return discUv;
+}
+
+FractalSample samplePizzaTerrainFractal(vec2 discUv, out vec2 fieldUv, out float iterationCount) {
+  vec2 z = vec2(0.0);
+  float trap = 1000000.0;
+  float structurePower = max(uStructurePower, 1.01);
+  int terrainIterations = min(uMaxIterations, PIZZA_TERRAIN_MAX_ITERATIONS);
+  float smoothValue = float(terrainIterations);
+  float escaped = 0.0;
+  float radius = length(discUv);
+  float innerEnvelope = 1.0 - smoothstep(0.0, 0.96, radius);
+  vec2 warpedUv = rotate2d(discUv, uRotation * 0.42 + uPizzaSpin * 0.08 + radius * radius * 0.32);
+  float swirl = innerEnvelope * (0.16 + uPizzaWarp * 0.08);
+  warpedUv = rotate2d(warpedUv, swirl * sin(radius * 5.4 - uPizzaMorph * 0.12));
+  warpedUv +=
+    vec2(
+      sin((warpedUv.y + radius * 0.22) * (4.2 + uPizzaWarp * 1.9) + uPizzaMorph * 0.16),
+      cos((warpedUv.x - radius * 0.14) * (4.8 + uPizzaWarp * 1.6) - uPizzaMorph * 0.12)
+    ) *
+    (0.012 + uPizzaWarp * 0.014) *
+    (0.8 - radius * 0.28);
+  fieldUv = warpedUv;
+  iterationCount = float(max(terrainIterations, 1));
+  vec2 c =
+    uCenter +
+    rotate2d(warpedUv * vec2(1.14, 0.94), uRotation * 0.7 + uPizzaSpin * 0.03) *
+    (uScale * 3.25);
+
+  for (int i = 0; i < PIZZA_TERRAIN_MAX_ITERATIONS; i++) {
+    if (i >= terrainIterations) {
+      break;
+    }
+
+    z = complexPowReal(z, structurePower) + c;
+    float radiusSquared = dot(z, z);
+    float crossTrap = abs(z.x * z.y) * mix(1.04, 0.82, uTrapMix);
+    float stripeTrap = abs(z.x) + abs(z.y) * mix(0.22, 0.54, uTrapMix);
+    float ringTrap = abs(length(z) - (0.36 + uTrapMix * 0.38));
+    trap = min(trap, min(mix(crossTrap, stripeTrap, uTrapMix), ringTrap * (0.82 + uTrapMix * 0.34)) * uTrapScale);
+
+    if (radiusSquared > 16.0) {
+      float escapeRadius = sqrt(radiusSquared);
+      smoothValue = float(i) + 1.0 - log(max(log(max(escapeRadius, 1.0001)), 0.0001)) / log(structurePower);
+      escaped = 1.0;
+      break;
+    }
+  }
+
+  FractalSample result;
+  result.escaped = escaped;
+  result.smoothValue = smoothValue;
+  result.trap = trap;
+  return result;
+}
+
+float lorenzCurveDistance(vec2 discUv) {
+  float distanceToCurve = 1000.0;
+  vec2 previous = uLorenzPoints[0];
+
+  for (int i = 1; i < PIZZA_LORENZ_POINT_COUNT; i++) {
+    vec2 current = uLorenzPoints[i];
+    vec2 segment = current - previous;
+    float denominator = max(dot(segment, segment), 0.0001);
+    float segmentAmount = clamp(dot(discUv - previous, segment) / denominator, 0.0, 1.0);
+    vec2 closest = previous + segment * segmentAmount;
+    distanceToCurve = min(distanceToCurve, length(discUv - closest));
+    previous = current;
+  }
+
+  return distanceToCurve;
+}
+
+PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
+  PizzaTerrainSample result;
+  float radius = length(discUv);
+  float crustStart = clamp(uPizzaCrustProtection, 0.68, 0.92);
+  float crustEnd = min(crustStart + 0.13, 1.03);
+  float interiorMask = 1.0 - smoothstep(crustStart, crustEnd, radius);
+  float crustMask = smoothstep(crustStart - 0.055, 1.0, radius);
+  float angle = atan(discUv.y, discUv.x);
+  float sliceRadius;
+  float sliceIndex;
+  float canonicalAngle;
+  float seamDistance;
+  float sliceAngle;
+  float slicePhase;
+  pizzaSymmetryDataFromDiscUv(discUv, sliceRadius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
+  vec2 fieldUv;
+  float iterationCount;
+  FractalSample sample = samplePizzaTerrainFractal(discUv, fieldUv, iterationCount);
+  float normalized = clamp(sample.smoothValue / max(iterationCount, 1.0), 0.0, 1.0);
+  float trapGlow = exp(-sample.trap * (4.6 - uPaletteEnergy * 0.5));
+  float contour = 0.5 + 0.5 * cos(normalized * (11.0 + trapGlow * 3.2) + trapGlow * 5.4);
+  float broadFold = 0.5 + 0.5 * cos(fieldUv.x * 3.4 - fieldUv.y * 2.8 + uPizzaMorph * 0.08);
+  float ridgeField = smoothstep(0.14, 0.92, (1.0 - normalized) * 0.7 + trapGlow * 0.64 + contour * 0.18);
+  float basinField = smoothstep(0.18, 0.98, normalized * 0.86 + (1.0 - trapGlow) * 0.26 + broadFold * 0.08);
+  float signedTerrain = ridgeField * 0.84 - basinField * 0.78 + (contour - 0.5) * 0.18 + (broadFold - 0.5) * 0.12;
+  float rimBand = smoothstep(0.76, 0.92, radius) * (1.0 - smoothstep(0.99, 1.05, radius));
+  float crustBlister =
+    rimBand *
+    (0.5 + 0.5 * sin(angle * 8.0 + contour * 4.8 + trapGlow * 5.4 + uPizzaMorph * 0.18 + radius * 8.0));
+  float domeHeight = 0.028 + (1.0 - radius * radius) * 0.018 * interiorMask;
+  float crustLift = rimBand * (0.048 + crustBlister * 0.016);
+  float grooveDistance = lorenzCurveDistance(rotate2d(discUv * vec2(0.98, 1.05), -0.28 + uPizzaSpin * 0.02));
+  float grooveWidth = mix(0.038, 0.018, clamp(uPizzaGrooveStrength * 0.7, 0.0, 1.0));
+  float groove =
+    (1.0 - smoothstep(grooveWidth, grooveWidth * 3.6, grooveDistance)) *
+    interiorMask *
+    (1.0 - smoothstep(0.0, 0.14, radius));
+  float micro =
+    sin(fieldUv.x * 28.0 + trapGlow * 4.0 + uPizzaMorph * 0.28) *
+    cos(fieldUv.y * 25.0 - normalized * 6.0 - uPizzaSpin * 0.1) *
+    0.0032 *
+    interiorMask *
+    (0.45 + trapGlow * 0.55);
+  float sliceCue = (1.0 - smoothstep(0.0, 0.08, seamDistance)) * smoothstep(0.42, 0.98, radius);
+  float carveAmplitude = (0.024 + uPizzaCarveStrength * 0.03) * interiorMask;
+  float grooveDepth = groove * (0.008 + uPizzaGrooveStrength * 0.024);
+  float baseHeight = domeHeight + crustLift;
+  float height = baseHeight + signedTerrain * carveAmplitude - grooveDepth - sliceCue * 0.0035 + micro;
+  float ridge = smoothstep(0.5, 0.92, 0.5 + signedTerrain * 0.6 + contour * 0.12 + crustMask * 0.2);
+  float valley = clamp(smoothstep(0.28, 0.9, 0.52 - signedTerrain * 0.56 + groove * 0.42), 0.0, 1.0) * interiorMask;
+  float sauce = clamp(valley * 0.76 + groove * 0.22 + sliceCue * 0.08 - crustMask * 0.36, 0.0, 1.0);
+  float wetness = clamp(valley * 0.64 + groove * 0.4 + sliceCue * 0.06 + (1.0 - ridge) * 0.12, 0.0, 1.0);
+  float glow = valley * (0.14 + groove * 0.32 + uPizzaValleyGlow * 0.3) + sliceCue * 0.02;
+
+  result.height = height;
+  result.baseHeight = baseHeight;
+  result.interiorMask = interiorMask;
+  result.crustMask = crustMask;
+  result.valley = valley;
+  result.ridge = ridge;
+  result.wetness = wetness;
+  result.sauce = sauce;
+  result.glow = glow;
+  result.groove = groove;
+  return result;
+}
+
+void pizzaCameraRay(vec2 fragCoord, out vec3 rayOrigin, out vec3 rayDirection) {
+  vec2 screen = (fragCoord - uResolution * 0.5) / max(uResolution.y, 0.0001);
+  float orbit = 0.22 + sin(uPizzaSpin * 0.12 + uPizzaMorph * 0.03) * 0.08;
+  rayOrigin = vec3(sin(orbit) * 0.36 - 0.24, -1.18 + cos(orbit) * 0.12, 1.16 + sin(uPizzaMorph * 0.04) * 0.04);
+  vec3 target = vec3(0.0, 0.0, 0.035);
+  vec3 forward = normalize(target - rayOrigin);
+  vec3 right = normalize(cross(forward, vec3(0.0, 0.0, 1.0)));
+  vec3 up = normalize(cross(right, forward));
+  rayDirection = normalize(forward * 1.72 + right * screen.x + up * (screen.y + 0.04));
+}
+
+bool intersectPizzaTop(
+  vec3 rayOrigin,
+  vec3 rayDirection,
+  out float hitDistance,
+  out vec3 hitPosition,
+  out vec2 discUv,
+  out PizzaTerrainSample terrain
+) {
+  if (rayDirection.z >= -0.0001) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  float t = (0.08 - rayOrigin.z) / rayDirection.z;
+
+  if (t <= 0.0) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  vec3 position = rayOrigin + rayDirection * t;
+
+  if (length(position.xy) > pizzaRadiusValue() * 1.1) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    position = rayOrigin + rayDirection * t;
+    discUv = position.xy / pizzaRadiusValue();
+
+    if (length(discUv) > 1.05) {
+      hitDistance = 0.0;
+      return false;
+    }
+
+    terrain = samplePizzaTerrain(discUv);
+    t += (terrain.height - position.z) / rayDirection.z;
+  }
+
+  position = rayOrigin + rayDirection * t;
+  discUv = position.xy / pizzaRadiusValue();
+
+  if (length(discUv) > 1.02) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  terrain = samplePizzaTerrain(discUv);
+  hitDistance = t;
+  hitPosition = vec3(position.xy, terrain.height);
+  return hitDistance > 0.0;
+}
+
+bool intersectPizzaSide(
+  vec3 rayOrigin,
+  vec3 rayDirection,
+  out float hitDistance,
+  out vec3 hitPosition,
+  out vec3 hitNormal
+) {
+  float cylinderA = dot(rayDirection.xy, rayDirection.xy);
+  float radius = pizzaRadiusValue();
+
+  if (cylinderA <= 0.000001) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  float cylinderB = 2.0 * dot(rayOrigin.xy, rayDirection.xy);
+  float cylinderC = dot(rayOrigin.xy, rayOrigin.xy) - radius * radius;
+  float cylinderDiscriminant = cylinderB * cylinderB - 4.0 * cylinderA * cylinderC;
+
+  if (cylinderDiscriminant < 0.0) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  float sqrtDiscriminant = sqrt(cylinderDiscriminant);
+  float candidateA = (-cylinderB - sqrtDiscriminant) / (2.0 * cylinderA);
+  float candidateB = (-cylinderB + sqrtDiscriminant) / (2.0 * cylinderA);
+  float bottom = pizzaBottomHeight();
+  float top = pizzaSideTopHeight();
+  float t = candidateA;
+
+  if (t <= 0.0 || (rayOrigin.z + rayDirection.z * t) < bottom || (rayOrigin.z + rayDirection.z * t) > top) {
+    t = candidateB;
+  }
+
+  vec3 position = rayOrigin + rayDirection * t;
+
+  if (t <= 0.0 || position.z < bottom || position.z > top) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  hitDistance = t;
+  hitPosition = position;
+  hitNormal = normalize(vec3(position.xy, 0.0));
+  return true;
+}
+
+bool intersectPizzaBoard(vec3 rayOrigin, vec3 rayDirection, out float hitDistance, out vec3 hitPosition) {
+  if (rayDirection.z >= -0.0001) {
+    hitDistance = 0.0;
+    return false;
+  }
+
+  hitDistance = (pizzaBoardHeight() - rayOrigin.z) / rayDirection.z;
+
+  if (hitDistance <= 0.0) {
+    return false;
+  }
+
+  hitPosition = rayOrigin + rayDirection * hitDistance;
+  return true;
+}
+
+vec3 computePizzaTopNormal(vec2 discUv, PizzaTerrainSample terrain) {
+  float epsilon = 0.018;
+  vec2 sampleXUv = clampPizzaDiscUv(discUv + vec2(epsilon, 0.0));
+  vec2 sampleYUv = clampPizzaDiscUv(discUv + vec2(0.0, epsilon));
+  PizzaTerrainSample sampleX = samplePizzaTerrain(sampleXUv);
+  PizzaTerrainSample sampleY = samplePizzaTerrain(sampleYUv);
+  vec3 tangentX = vec3(pizzaRadiusValue() * epsilon, 0.0, sampleX.height - terrain.height);
+  vec3 tangentY = vec3(0.0, pizzaRadiusValue() * epsilon, sampleY.height - terrain.height);
+  return normalize(cross(tangentX, tangentY));
+}
+
+vec3 shadePizzaBoard(vec3 point) {
+  float boardNoise =
+    0.5 +
+    0.5 *
+    sin(point.x * 9.4 + sin(point.y * 4.6 + uPizzaSpin * 0.04) * 1.6 + uPizzaMorph * 0.03) *
+    cos(point.y * 8.2 - point.x * 1.8 - uPizzaSpin * 0.02);
+  float flourDust = pow(0.5 + 0.5 * sin(point.x * 17.0 + point.y * 13.0 + uPizzaMorph * 0.05), 6.0);
+  float shadow = 1.0 - smoothstep(0.68, 1.36, length((point.xy + vec2(0.16, 0.12)) / pizzaRadiusValue()));
+  float warmth = pow(max(1.0 - length(point.xy) / 2.0, 0.0), 3.0);
+  vec3 boardColor = mix(vec3(0.028, 0.02, 0.016), vec3(0.094, 0.064, 0.044), 0.34 + boardNoise * 0.2);
+  boardColor += vec3(0.11, 0.096, 0.08) * flourDust * 0.05;
+  boardColor += vec3(0.12, 0.04, 0.012) * warmth * 0.05;
+  boardColor *= 1.0 - shadow * 0.34;
+  return boardColor;
+}
+
+vec3 shadePizzaTopSurface(vec3 hitPosition, vec2 discUv, PizzaTerrainSample terrain, vec3 rayOrigin) {
+  vec3 normal = computePizzaTopNormal(discUv, terrain);
+  vec3 viewDirection = normalize(rayOrigin - hitPosition);
+  vec3 keyLightDirection = normalize(vec3(-0.82, -0.52, 0.94));
+  vec3 fillLightDirection = normalize(vec3(0.36, 0.84, 0.62));
+  vec3 rimLightDirection = normalize(vec3(0.18, -0.96, 0.38));
+  float keyLight = max(dot(normal, keyLightDirection), 0.0);
+  float fillLight = max(dot(normal, fillLightDirection), 0.0);
+  float rimLight = max(dot(normal, rimLightDirection), 0.0);
+  float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
+  float slope = 1.0 - clamp(normal.z, 0.0, 1.0);
+  float toastMask = clamp(terrain.ridge * 0.64 + slope * 0.46 + terrain.crustMask * 0.3, 0.0, 1.0);
+  float sauceMask = clamp(terrain.sauce + terrain.groove * 0.16 - terrain.crustMask * 0.34, 0.0, 1.0);
+  float shimmer =
+    0.5 +
+    0.5 *
+    sin(
+      dot(hitPosition.xy, vec2(18.0, 14.0)) -
+      uPizzaMorph * 0.34 +
+      uPizzaSpin * 0.24 +
+      terrain.groove * 6.0
+    );
+  float specularPower = mix(38.0, 15.0, terrain.wetness);
+  float specular =
+    pow(max(dot(reflect(-keyLightDirection, normal), viewDirection), 0.0), specularPower) *
+    mix(0.16, 0.88, terrain.wetness);
+  float fillSpecular =
+    pow(max(dot(reflect(-fillLightDirection, normal), viewDirection), 0.0), 22.0) *
+    terrain.wetness *
+    0.16;
+  float cavity = clamp(1.0 - terrain.valley * 0.22 - terrain.groove * 0.08, 0.68, 1.0);
+  vec3 cheeseColor = mix(vec3(0.95, 0.77, 0.4), vec3(1.0, 0.9, 0.58), 0.26 + terrain.ridge * 0.12);
+  vec3 brownedCheese = vec3(0.58, 0.29, 0.08);
+  vec3 sauceColor = mix(vec3(0.64, 0.12, 0.07), vec3(0.92, 0.3, 0.11), 0.28 + terrain.groove * 0.3 + terrain.glow * 0.18);
+  vec3 crustColor = mix(vec3(0.76, 0.53, 0.24), vec3(0.9, 0.72, 0.4), terrain.crustMask * 0.32 + terrain.ridge * 0.08);
+  vec3 baseColor = mix(cheeseColor, sauceColor, sauceMask);
+
+  baseColor = mix(baseColor, brownedCheese, toastMask * 0.44);
+  baseColor = mix(baseColor, crustColor, terrain.crustMask * 0.88);
+  baseColor *= cavity;
+
+  vec3 litColor =
+    baseColor * (0.2 + normal.z * 0.22) +
+    baseColor * vec3(1.08, 1.0, 0.92) * keyLight * 0.86 +
+    baseColor * vec3(0.64, 0.42, 0.24) * fillLight * 0.34 +
+    baseColor * vec3(0.38, 0.22, 0.14) * rimLight * 0.12;
+  litColor += vec3(1.0, 0.84, 0.58) * (specular + fillSpecular);
+  litColor += sauceColor * terrain.glow * (0.04 + 0.1 * uPizzaValleyGlow) * (0.35 + shimmer * 0.65);
+  litColor += sauceColor * fresnel * terrain.wetness * 0.05;
+
+  return pow(litColor, vec3(0.94));
+}
+
+vec3 shadePizzaSideSurface(vec3 hitPosition, vec3 hitNormal, vec3 rayOrigin) {
+  vec3 viewDirection = normalize(rayOrigin - hitPosition);
+  vec3 keyLightDirection = normalize(vec3(-0.82, -0.52, 0.94));
+  vec3 fillLightDirection = normalize(vec3(0.36, 0.84, 0.62));
+  float keyLight = max(dot(hitNormal, keyLightDirection), 0.0);
+  float fillLight = max(dot(hitNormal, fillLightDirection), 0.0);
+  float rim = pow(1.0 - max(dot(hitNormal, viewDirection), 0.0), 2.4);
+  float sideHeight = clamp((hitPosition.z - pizzaBottomHeight()) / max(pizzaSideTopHeight() - pizzaBottomHeight(), 0.0001), 0.0, 1.0);
+  float toastBands =
+    0.5 +
+    0.5 *
+    sin(atan(hitPosition.y, hitPosition.x) * 8.0 + sideHeight * 14.0 + uPizzaMorph * 0.14 + uPizzaSpin * 0.1);
+  vec3 crustColor = mix(vec3(0.56, 0.34, 0.14), vec3(0.86, 0.68, 0.38), 0.3 + toastBands * 0.28);
+  crustColor = mix(crustColor, vec3(0.42, 0.2, 0.08), smoothstep(0.62, 1.0, sideHeight) * 0.16);
+  vec3 litColor =
+    crustColor * (0.16 + keyLight * 0.9 + fillLight * 0.18) +
+    vec3(1.0, 0.82, 0.56) * rim * (0.08 + sideHeight * 0.06);
+  return pow(litColor, vec3(0.96));
+}
+
+vec3 shadePizzaAtFrag(vec2 fragCoord) {
+  vec3 rayOrigin;
+  vec3 rayDirection;
+  pizzaCameraRay(fragCoord, rayOrigin, rayDirection);
+
+  float boardDistance;
+  vec3 boardPosition;
+  bool hitBoard = intersectPizzaBoard(rayOrigin, rayDirection, boardDistance, boardPosition);
+  vec3 color = hitBoard ? shadePizzaBoard(boardPosition) : vec3(0.01, 0.008, 0.008);
+
+  float topDistance;
+  vec3 topPosition;
+  vec2 topDiscUv;
+  PizzaTerrainSample topTerrain;
+  bool hitTop = intersectPizzaTop(rayOrigin, rayDirection, topDistance, topPosition, topDiscUv, topTerrain);
+
+  float sideDistance;
+  vec3 sidePosition;
+  vec3 sideNormal;
+  bool hitSide = intersectPizzaSide(rayOrigin, rayDirection, sideDistance, sidePosition, sideNormal);
+
+  if (hitTop && (!hitSide || topDistance <= sideDistance)) {
+    color = shadePizzaTopSurface(topPosition, topDiscUv, topTerrain, rayOrigin);
+  } else if (hitSide) {
+    color = shadePizzaSideSurface(sidePosition, sideNormal, rayOrigin);
+  }
+
+  vec2 vignetteUv = fragCoord / uResolution - 0.5;
+  vignetteUv.x *= uResolution.x / max(uResolution.y, 0.0001);
+  float vignette = clamp(1.12 - dot(vignetteUv, vignetteUv) * 0.58, 0.0, 1.0);
+
+  return color * vignette;
 }
 
 vec3 colorize(FractalSample sample, vec2 uv, float paletteOffset) {
@@ -900,6 +1349,11 @@ vec3 shadeCoinAtFrag(vec2 fragCoord) {
 void main() {
   vec2 frag = gl_FragCoord.xy;
 
+  if (uLayoutMode > 0.5 && uLayoutMode < 1.5) {
+    gl_FragColor = vec4(shadePizzaAtFrag(frag), 1.0);
+    return;
+  }
+
   if (uLayoutMode > 1.5) {
     gl_FragColor = vec4(shadeCoinAtFrag(frag), 1.0);
     return;
@@ -929,10 +1383,6 @@ void main() {
       );
       color = mix(color, refined, clamp(boundaryWeight * (0.52 + uStableAA * 0.28), 0.0, 0.88));
     }
-  }
-
-  if (uLayoutMode > 0.5) {
-    color = applyPizzaComposition(color, frag);
   }
 
   gl_FragColor = vec4(color, 1.0);
@@ -1252,6 +1702,11 @@ type FractalUniforms = {
   coinShimmer: WebGLUniformLocation | null;
   pizzaBackdropRotation: WebGLUniformLocation | null;
   pizzaBackdropTorsion: WebGLUniformLocation | null;
+  pizzaCarveStrength: WebGLUniformLocation | null;
+  pizzaGrooveStrength: WebGLUniformLocation | null;
+  pizzaCrustProtection: WebGLUniformLocation | null;
+  pizzaValleyGlow: WebGLUniformLocation | null;
+  lorenzPoints: WebGLUniformLocation | null;
 };
 
 type CompositeUniforms = {
@@ -1319,6 +1774,65 @@ function clamp(value: number, min: number, max: number) {
 function lerp(start: number, end: number, amount: number) {
   return start + (end - start) * amount;
 }
+
+function createLorenzCurvePoints(pointCount: number) {
+  const sigma = 10;
+  const rho = 28;
+  const beta = 8 / 3;
+  const deltaTime = 0.0085;
+  const discardSteps = 240;
+  const captureStride = 9;
+  const points: Array<{ x: number; y: number }> = [];
+  let x = 0.01;
+  let y = 0;
+  let z = 0;
+
+  for (let step = 0; step < discardSteps + pointCount * captureStride; step++) {
+    const nextX = x + sigma * (y - x) * deltaTime;
+    const nextY = y + (x * (rho - z) - y) * deltaTime;
+    const nextZ = z + (x * y - beta * z) * deltaTime;
+    x = nextX;
+    y = nextY;
+    z = nextZ;
+
+    if (step >= discardSteps && (step - discardSteps) % captureStride === 0) {
+      points.push({ x, y });
+    }
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+
+  const centerX = (minX + maxX) * 0.5;
+  const centerY = (minY + maxY) * 0.5;
+  const span = Math.max(maxX - minX, maxY - minY, 0.0001);
+  const rotation = -0.38;
+  const cosine = Math.cos(rotation);
+  const sine = Math.sin(rotation);
+  const data = new Float32Array(pointCount * 2);
+
+  points.forEach((point, index) => {
+    const normalizedX = ((point.x - centerX) / span) * 1.32;
+    const normalizedY = ((point.y - centerY) / span) * 1.08;
+    const rotatedX = normalizedX * cosine - normalizedY * sine;
+    const rotatedY = normalizedX * sine + normalizedY * cosine;
+    data[index * 2] = clamp(rotatedX * 0.58 + 0.02, -0.74, 0.74);
+    data[index * 2 + 1] = clamp(rotatedY * 0.48 - 0.03, -0.72, 0.72);
+  });
+
+  return data;
+}
+
+const LORENZ_CURVE_POINTS = createLorenzCurvePoints(PIZZA_LORENZ_POINT_COUNT);
 
 function normalizeVector3(vector: Vector3): Vector3 {
   const length = Math.hypot(vector.x, vector.y, vector.z);
@@ -2490,6 +3004,11 @@ function ensureRenderer() {
     coinShimmer: context.getUniformLocation(fractalProgram, "uCoinShimmer"),
     pizzaBackdropRotation: context.getUniformLocation(fractalProgram, "uPizzaBackdropRotation"),
     pizzaBackdropTorsion: context.getUniformLocation(fractalProgram, "uPizzaBackdropTorsion"),
+    pizzaCarveStrength: context.getUniformLocation(fractalProgram, "uPizzaCarveStrength"),
+    pizzaGrooveStrength: context.getUniformLocation(fractalProgram, "uPizzaGrooveStrength"),
+    pizzaCrustProtection: context.getUniformLocation(fractalProgram, "uPizzaCrustProtection"),
+    pizzaValleyGlow: context.getUniformLocation(fractalProgram, "uPizzaValleyGlow"),
+    lorenzPoints: context.getUniformLocation(fractalProgram, "uLorenzPoints[0]"),
   };
   renderState.compositeUniforms = {
     currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
@@ -3545,6 +4064,16 @@ function renderFractal(deltaSeconds: number) {
     z: clamp(0.18 + coinMotion.lift * 0.18 + audio.bassDrive * 0.08 + pulseImpact * 0.12 + Math.abs(coinMotion.flipVelocity) * 0.012, 0.14, 0.46),
   });
   const coinShimmer = clamp(0.16 + coinMotion.shimmer * 0.72 + audio.highDrive * 0.08 + pulseGlow * 0.04, 0.16, 0.98);
+  const pizzaCarveStrength = isPizzaLayout.value
+    ? clamp((Number(settings.fractalTraversePizzaCarveDepth) || 1) * (0.94 + audio.bassDrive * 0.08 + pulseImpact * 0.06), 0.45, 1.7)
+    : 0;
+  const pizzaGrooveStrength = isPizzaLayout.value
+    ? clamp((Number(settings.fractalTraversePizzaGrooveStrength) || 0.72) * (0.94 + audio.highDrive * 0.06 + pulseAnticipation * 0.04), 0.12, 1.4)
+    : 0;
+  const pizzaCrustProtection = clamp(Number(settings.fractalTraversePizzaCrustProtection) || 0.82, 0.68, 0.92);
+  const pizzaValleyGlow = isPizzaLayout.value
+    ? clamp((Number(settings.fractalTraversePizzaValleyGlow) || 0.38) * (0.92 + audio.palette * 0.08 + pulseGlow * 0.08), 0, 1.1)
+    : 0;
 
   if (
     !ensureRenderTarget(gl, renderState.currentTarget, currentWidth, currentHeight, gl.LINEAR) ||
@@ -3602,6 +4131,11 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.coinShimmer, coinShimmer);
   gl.uniform1f(fractalUniforms.pizzaBackdropRotation, pizzaBackdropRotation);
   gl.uniform1f(fractalUniforms.pizzaBackdropTorsion, pizzaBackdropTorsion);
+  gl.uniform1f(fractalUniforms.pizzaCarveStrength, pizzaCarveStrength);
+  gl.uniform1f(fractalUniforms.pizzaGrooveStrength, pizzaGrooveStrength);
+  gl.uniform1f(fractalUniforms.pizzaCrustProtection, pizzaCrustProtection);
+  gl.uniform1f(fractalUniforms.pizzaValleyGlow, pizzaValleyGlow);
+  gl.uniform2fv(fractalUniforms.lorenzPoints, LORENZ_CURVE_POINTS);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
