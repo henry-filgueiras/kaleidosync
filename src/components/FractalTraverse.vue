@@ -56,6 +56,14 @@ uniform float uPizzaMorph;
 uniform float uSymmetryGroup;
 uniform float uSymmetryMode;
 uniform float uSymmetryStrength;
+uniform vec2 uCoinTilt;
+uniform float uCoinSpin;
+uniform float uCoinPrecession;
+uniform float uCoinFlip;
+uniform float uCoinDepth;
+uniform float uCoinRadius;
+uniform vec2 uCoinOffset;
+uniform float uCoinShimmer;
 
 const int MAX_ITERATIONS = 768;
 const float PI = 3.14159265359;
@@ -65,6 +73,15 @@ struct FractalSample {
   float escaped;
   float smoothValue;
   float trap;
+};
+
+struct CoinProjection {
+  vec2 discUv;
+  float radius;
+  float valid;
+  float discMask;
+  float edgeFacing;
+  float frontFacing;
 };
 
 vec2 complexPowReal(vec2 z, float power) {
@@ -90,6 +107,43 @@ vec2 rotate2d(vec2 point, float angle) {
   );
 }
 
+vec3 rotateX3d(vec3 point, float angle) {
+  float cosine = cos(angle);
+  float sine = sin(angle);
+  return vec3(
+    point.x,
+    point.y * cosine - point.z * sine,
+    point.y * sine + point.z * cosine
+  );
+}
+
+vec3 rotateY3d(vec3 point, float angle) {
+  float cosine = cos(angle);
+  float sine = sin(angle);
+  return vec3(
+    point.x * cosine + point.z * sine,
+    point.y,
+    -point.x * sine + point.z * cosine
+  );
+}
+
+vec3 rotateZ3d(vec3 point, float angle) {
+  float cosine = cos(angle);
+  float sine = sin(angle);
+  return vec3(
+    point.x * cosine - point.y * sine,
+    point.x * sine + point.y * cosine,
+    point.z
+  );
+}
+
+vec3 applyCoinRotation(vec3 point) {
+  vec3 rotated = rotateZ3d(point, uCoinSpin);
+  rotated = rotateX3d(rotated, uCoinTilt.x + uCoinFlip);
+  rotated = rotateY3d(rotated, uCoinTilt.y);
+  return rotateZ3d(rotated, uCoinPrecession);
+}
+
 float positiveMod(float value, float modulus) {
   return mod(mod(value, modulus) + modulus, modulus);
 }
@@ -97,6 +151,28 @@ float positiveMod(float value, float modulus) {
 vec2 discUvFromFrag(vec2 fragCoord) {
   float safeRadius = max(min(uResolution.x, uResolution.y) * 0.5, 0.0001);
   return (fragCoord - uResolution * 0.5) / safeRadius;
+}
+
+void pizzaSymmetryDataFromDiscUv(
+  vec2 discUv,
+  out float radius,
+  out float sliceIndex,
+  out float canonicalAngle,
+  out float seamDistance,
+  out float sliceAngle,
+  out float slicePhase
+) {
+  radius = length(discUv);
+  float order = max(3.0, floor(uSliceCount + 0.5));
+  float modeIndex = max(1.0, floor(uSymmetryMode + 0.5));
+  sliceAngle = TAU / order;
+  float wrappedAngle = positiveMod(atan(discUv.y, discUv.x) + PI + uPizzaSpin * 0.14, TAU);
+  sliceIndex = floor(wrappedAngle / sliceAngle);
+  float reducedAngle = wrappedAngle - sliceIndex * sliceAngle;
+  float centeredAngle = reducedAngle - sliceAngle * 0.5;
+  seamDistance = min(reducedAngle, sliceAngle - reducedAngle) / max(sliceAngle * 0.5, 0.0001);
+  canonicalAngle = uSymmetryGroup > 0.5 ? abs(centeredAngle) : centeredAngle;
+  slicePhase = TAU * modeIndex * sliceIndex / order;
 }
 
 void pizzaSymmetryData(
@@ -110,17 +186,7 @@ void pizzaSymmetryData(
   out float slicePhase
 ) {
   discUv = discUvFromFrag(fragCoord);
-  radius = length(discUv);
-  float order = max(3.0, floor(uSliceCount + 0.5));
-  float modeIndex = max(1.0, floor(uSymmetryMode + 0.5));
-  sliceAngle = TAU / order;
-  float wrappedAngle = positiveMod(atan(discUv.y, discUv.x) + PI + uPizzaSpin * 0.14, TAU);
-  sliceIndex = floor(wrappedAngle / sliceAngle);
-  float reducedAngle = wrappedAngle - sliceIndex * sliceAngle;
-  float centeredAngle = reducedAngle - sliceAngle * 0.5;
-  seamDistance = min(reducedAngle, sliceAngle - reducedAngle) / max(sliceAngle * 0.5, 0.0001);
-  canonicalAngle = uSymmetryGroup > 0.5 ? abs(centeredAngle) : centeredAngle;
-  slicePhase = TAU * modeIndex * sliceIndex / order;
+  pizzaSymmetryDataFromDiscUv(discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
 }
 
 FractalSample sampleMutatingMandelbrot(vec2 c) {
@@ -201,80 +267,87 @@ vec3 boostSaturation(vec3 color, float amount) {
   return mix(vec3(luma), color, amount);
 }
 
+float pizzaContinuationMix(float radius) {
+  return smoothstep(0.96, 1.22, radius);
+}
+
+FractalSample samplePizzaField(vec2 discUv, float continuationMix, out vec2 paletteUv, out float paletteOffset) {
+  float radius;
+  float sliceIndex;
+  float canonicalAngle;
+  float seamDistance;
+  float sliceAngle;
+  float slicePhase;
+  pizzaSymmetryDataFromDiscUv(discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
+
+  float seamBias = 1.0 - seamDistance;
+  float halfSlice = max(sliceAngle * 0.5, 0.0001);
+  float phaseCos = cos(slicePhase);
+  float phaseSin = sin(slicePhase);
+  float haloMix = smoothstep(0.86, 1.02, radius) * (1.0 - smoothstep(1.22, 1.52, radius));
+  float recurrenceBand =
+    0.5 +
+    0.5 *
+    sin((radius - 1.0) * (4.8 + uPizzaWarp * 2.1) - uPizzaMorph * 0.3 + slicePhase * (1.0 + phaseCos * 0.12));
+  float radiusInversion = clamp(0.98 / max(radius, 0.0001), 0.18, 1.02);
+  float continuationRadius = clamp(
+    mix(radiusInversion, 0.58 + recurrenceBand * 0.18, 0.32 + haloMix * 0.14),
+    0.18,
+    1.02
+  );
+  float continuationTwist =
+    continuationMix *
+    ((radius - 1.0) * (0.34 + uPizzaWarp * 0.16) + log(1.0 + max(radius - 1.0, 0.0) * 2.0) * (0.28 + uSymmetryStrength * 0.16));
+  float mappedRadius = mix(radius, continuationRadius, continuationMix);
+  float mappedAngle = canonicalAngle + continuationTwist;
+  float wedgeCoord = mappedAngle / halfSlice;
+  vec2 radialDirection = radius > 0.0001 ? discUv / radius : vec2(0.0, 1.0);
+  vec2 mappedDiscUv = radialDirection * mappedRadius;
+  float discWarpEnvelope = smoothstep(0.06, 0.3, radius) * (1.0 - smoothstep(0.82, 1.0, radius));
+  float exteriorWarpEnvelope = continuationMix * (1.0 - smoothstep(1.18, 2.02, radius));
+  float warpEnvelope = max(discWarpEnvelope, exteriorWarpEnvelope);
+  float radialWarp =
+    sin(mappedRadius * (7.2 + phaseCos * 1.1) - uPizzaMorph * (1.08 + phaseSin * 0.12) + slicePhase) *
+    (0.05 + uPizzaWarp * (0.09 + uSymmetryStrength * 0.035)) *
+    warpEnvelope;
+  float angularWarp =
+    sin(wedgeCoord * (4.5 + phaseSin * 0.7) + uPizzaMorph * 0.82 + slicePhase * 0.78) *
+    (0.06 + uPizzaWarp * (0.1 + uSymmetryStrength * 0.035)) *
+    warpEnvelope;
+
+  // The outer field still comes from the same canonical wedge; only the radial remap
+  // and twist change as pixels move beyond the disc.
+  vec2 wedgeUv = vec2(
+    wedgeCoord * (0.92 + uSymmetryStrength * 0.14 + phaseCos * 0.04 + continuationMix * 0.1) + angularWarp,
+    (mappedRadius - 0.45) * (1.42 + phaseSin * 0.12 + continuationMix * 0.12) + radialWarp
+  );
+  wedgeUv = rotate2d(
+    wedgeUv * (0.9 + uSymmetryStrength * 0.12 + phaseCos * 0.06) +
+    vec2(phaseCos, phaseSin) * (0.024 + uSymmetryStrength * 0.024 + continuationMix * 0.018) +
+    mappedDiscUv * (0.032 + uPizzaWarp * 0.026 + continuationMix * 0.02),
+    phaseSin * (0.18 + uSymmetryStrength * 0.14) + phaseCos * uPizzaMorph * 0.032 + continuationMix * 0.12
+  );
+
+  float sampleSpan = uScale * (0.86 + uPizzaWarp * 0.14 + uSymmetryStrength * 0.1) * mix(1.0, 0.74, continuationMix);
+  paletteUv = mix(mappedDiscUv, wedgeUv * 0.46, 0.4 + continuationMix * 0.14);
+  paletteOffset =
+    (phaseCos * 0.045 + phaseSin * 0.022) * uSymmetryStrength +
+    seamBias * 0.024 +
+    mappedRadius * 0.02 +
+    continuationMix * (0.024 + recurrenceBand * 0.018) +
+    mix(wedgeCoord * 0.006, wedgeCoord * 0.012, step(0.5, uSymmetryGroup));
+  return sampleMutatingMandelbrot(uCenter + rotate2d(wedgeUv, uRotation + uPizzaSpin * 0.07) * sampleSpan);
+}
+
 FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv, out float paletteOffset) {
   vec2 centered = fragCoord / uResolution - 0.5;
   paletteUv = vec2(centered.x, centered.y);
   paletteOffset = 0.0;
 
-  if (uLayoutMode > 0.5) {
-    vec2 discUv;
-    float radius;
-    float sliceIndex;
-    float canonicalAngle;
-    float seamDistance;
-    float sliceAngle;
-    float slicePhase;
-    pizzaSymmetryData(fragCoord, discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
-
-    float seamBias = 1.0 - seamDistance;
-    float halfSlice = max(sliceAngle * 0.5, 0.0001);
-    float outsideMix = smoothstep(0.88, 1.08, radius);
-    float haloMix = smoothstep(0.82, 0.96, radius) * (1.0 - smoothstep(1.12, 1.42, radius));
-    float radiusInversion = clamp(1.02 / max(radius, 0.0001), 0.18, 1.06);
-    float phaseCos = cos(slicePhase);
-    float phaseSin = sin(slicePhase);
-    float recurrenceBand =
-      0.5 +
-      0.5 *
-      sin((radius - 1.0) * (5.4 + uPizzaWarp * 2.6) - uPizzaMorph * 0.34 + slicePhase * (1.0 + phaseCos * 0.14));
-    float continuationRadius = clamp(
-      mix(radiusInversion * (0.72 + recurrenceBand * 0.18), 0.3 + recurrenceBand * 0.22, 0.62 + haloMix * 0.16),
-      0.18,
-      0.72
-    );
-    float continuationTwist =
-      (radius - 1.0) * (0.72 + uPizzaWarp * 0.28) +
-      log(1.0 + max(radius - 1.0, 0.0) * 2.8) * (0.84 + uSymmetryStrength * 0.3) +
-      phaseSin * 0.08;
-    float mappedRadius = mix(radius, continuationRadius, outsideMix);
-    float mappedAngle = canonicalAngle + continuationTwist * outsideMix;
-    float wedgeCoord = mappedAngle / halfSlice;
-    vec2 radialDirection = radius > 0.0001 ? discUv / radius : vec2(0.0, 1.0);
-    vec2 mappedDiscUv = radialDirection * mappedRadius;
-    float discWarpEnvelope = smoothstep(0.05, 0.3, radius) * (1.0 - smoothstep(0.82, 1.02, radius));
-    float exteriorWarpEnvelope = outsideMix * (1.0 - smoothstep(1.14, 2.06, radius));
-    float warpEnvelope = max(discWarpEnvelope, exteriorWarpEnvelope);
-    float radialWarp =
-      sin(mappedRadius * (7.6 + phaseCos * 1.2) - uPizzaMorph * (1.12 + phaseSin * 0.12) + slicePhase) *
-      (0.055 + uPizzaWarp * (0.1 + uSymmetryStrength * 0.04)) *
-      warpEnvelope;
-    float angularWarp =
-      sin(wedgeCoord * (4.8 + phaseSin * 0.8) + uPizzaMorph * 0.86 + slicePhase * 0.8) *
-      (0.07 + uPizzaWarp * (0.12 + uSymmetryStrength * 0.04)) *
-      warpEnvelope;
-
-    // The whole disc is generated from one wedge domain; slice content changes only
-    // through the symmetry phase k -> exp(i * 2pi * m * k / n).
-    vec2 wedgeUv = vec2(
-      wedgeCoord * (0.92 + uSymmetryStrength * 0.16 + phaseCos * 0.05 + outsideMix * 0.26) + angularWarp,
-      (mappedRadius - 0.41) * (1.54 + phaseSin * 0.16 + outsideMix * 0.22) + radialWarp
-    );
-    wedgeUv = rotate2d(
-      wedgeUv * (0.9 + uSymmetryStrength * 0.12 + phaseCos * 0.08 + outsideMix * 0.14) +
-      vec2(phaseCos, phaseSin) * (0.028 + uSymmetryStrength * 0.028 + outsideMix * 0.038) +
-      mappedDiscUv * (0.034 + uPizzaWarp * 0.028 + outsideMix * 0.048),
-      phaseSin * (0.22 + uSymmetryStrength * 0.18) + phaseCos * uPizzaMorph * 0.035 + outsideMix * (0.22 + phaseSin * 0.12)
-    );
-
-    float sampleSpan = uScale * (0.84 + uPizzaWarp * 0.16 + uSymmetryStrength * 0.12) * mix(1.0, 0.56, outsideMix);
-    paletteUv = mix(mappedDiscUv, wedgeUv * 0.54, 0.44 + outsideMix * 0.28);
-    paletteOffset =
-      (phaseCos * 0.045 + phaseSin * 0.022) * uSymmetryStrength +
-      seamBias * 0.024 +
-      mappedRadius * 0.02 +
-      outsideMix * (0.05 + recurrenceBand * 0.036) +
-      mix(wedgeCoord * 0.006, wedgeCoord * 0.012, step(0.5, uSymmetryGroup));
-    return sampleMutatingMandelbrot(uCenter + rotate2d(wedgeUv, uRotation + uPizzaSpin * 0.07) * sampleSpan);
+  if (uLayoutMode > 0.5 && uLayoutMode < 1.5) {
+    vec2 discUv = discUvFromFrag(fragCoord);
+    float continuationMix = pizzaContinuationMix(length(discUv));
+    return samplePizzaField(discUv, continuationMix, paletteUv, paletteOffset);
   }
 
   centered.x *= uAspect;
@@ -318,37 +391,37 @@ vec3 applyPizzaComposition(vec3 color, vec2 fragCoord) {
 
   float halfSlice = max(sliceAngle * 0.5, 0.0001);
   float wedgeCoord = canonicalAngle / halfSlice;
-  float discMask = 1.0 - smoothstep(0.82, 0.9, radius);
-  float haloMask = smoothstep(0.8, 0.94, radius) * (1.0 - smoothstep(1.08, 1.34, radius));
-  float outerFieldMask = smoothstep(0.88, 1.14, radius) * (1.0 - smoothstep(2.02, 2.3, radius));
+  float discMask = 1.0 - smoothstep(0.88, 0.97, radius);
+  float haloMask = smoothstep(0.84, 0.98, radius) * (1.0 - smoothstep(1.16, 1.42, radius));
+  float outerFieldMask = smoothstep(1.0, 1.32, radius) * (1.0 - smoothstep(1.98, 2.26, radius));
   float seamShadow = (1.0 - smoothstep(0.04, 0.2, seamDistance)) * smoothstep(0.1, 0.92, radius);
   float seamGlow = (1.0 - smoothstep(0.0, 0.1, seamDistance)) * smoothstep(0.16, 0.92, radius);
   float hubMask = 1.0 - smoothstep(0.045, 0.17, radius);
   float hubRing = smoothstep(0.08, 0.11, radius) * (1.0 - smoothstep(0.15, 0.19, radius));
-  float rim = smoothstep(0.66, 0.82, radius) * (1.0 - smoothstep(0.88, 0.96, radius));
-  float exteriorReach = 1.0 - smoothstep(1.7, 2.18, radius);
-  vec3 background = vec3(0.008, 0.007, 0.014);
+  float rim = smoothstep(0.76, 0.9, radius) * (1.0 - smoothstep(0.94, 1.02, radius));
+  float exteriorReach = 1.0 - smoothstep(1.92, 2.28, radius);
+  vec3 background = vec3(0.005, 0.007, 0.012);
   vec3 seamColor = vec3(0.024, 0.018, 0.03) + vec3(0.08, 0.055, 0.04) * (0.22 + uPaletteEnergy * 0.16);
   vec3 crustGlow = vec3(0.16, 0.11, 0.08) * (0.06 + uPaletteEnergy * 0.05);
   vec3 hubGlow = vec3(0.11, 0.1, 0.13) * (0.08 + uAmbientLift * 0.12);
-  float exteriorPhase = canonicalAngle * 6.2 + radius * (3.8 + uPizzaWarp * 1.9) - uPizzaMorph * 0.35 + slicePhase;
+  float exteriorPhase = canonicalAngle * 5.6 + radius * (3.2 + uPizzaWarp * 1.6) - uPizzaMorph * 0.24 + slicePhase;
   float mirrorBloom = 0.5 + 0.5 * cos(exteriorPhase);
-  float sliceBloom = pow(clamp(1.0 - abs(wedgeCoord), 0.0, 1.0), 1.35);
-  float radialBands = 0.5 + 0.5 * cos((radius - 0.92) * (8.4 + uPizzaWarp * 2.4) - uPizzaMorph * 0.4 + slicePhase);
-  float exteriorSymmetry = sliceBloom * (0.52 + radialBands * 0.48);
+  float sliceBloom = pow(clamp(1.0 - abs(wedgeCoord), 0.0, 1.0), 1.5);
+  float radialBands = 0.5 + 0.5 * cos((radius - 0.96) * (7.2 + uPizzaWarp * 2.0) - uPizzaMorph * 0.34 + slicePhase);
+  float exteriorSymmetry = sliceBloom * (0.56 + radialBands * 0.44);
   float exteriorLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-  float spokeFan = pow(clamp(1.0 - seamDistance, 0.0, 1.0), 2.1);
-  vec3 exteriorBase = mix(vec3(exteriorLuma * (0.28 + uAmbientLift * 0.2)), color, 0.52 + uPaletteEnergy * 0.24);
-  exteriorBase = boostSaturation(pow(max(exteriorBase, vec3(0.0)), vec3(0.74)), 1.24 + exteriorSymmetry * 0.42);
+  float spokeFan = pow(clamp(1.0 - seamDistance, 0.0, 1.0), 1.7);
+  vec3 exteriorBase = mix(vec3(exteriorLuma * (0.34 + uAmbientLift * 0.14)), color, 0.64);
+  exteriorBase = boostSaturation(exteriorBase, 0.96 + exteriorSymmetry * 0.16);
   vec3 haloColor =
-    exteriorBase * (0.98 + uAmbientLift * 0.48 + exteriorSymmetry * 0.24) +
-    seamColor * (0.22 + mirrorBloom * 0.16 + spokeFan * 0.14) +
-    crustGlow * exteriorSymmetry * 0.28;
+    exteriorBase * (0.76 + uAmbientLift * 0.24 + uPaletteEnergy * 0.12 + exteriorSymmetry * 0.12) +
+    seamColor * (0.08 + mirrorBloom * 0.06 + spokeFan * 0.04) +
+    crustGlow * exteriorSymmetry * 0.12;
   vec3 outerColor =
-    mix(vec3(exteriorLuma), exteriorBase, 0.84) * (0.58 + uAmbientLift * 0.36 + uPaletteEnergy * 0.16 + exteriorSymmetry * 0.22);
-  outerColor += seamColor * spokeFan * (0.26 + mirrorBloom * 0.16);
-  outerColor += crustGlow * (0.14 + radialBands * 0.18 + exteriorSymmetry * 0.1);
-  outerColor = boostSaturation(outerColor, 1.38 + mirrorBloom * 0.24);
+    mix(vec3(exteriorLuma), exteriorBase, 0.54) * (0.34 + uAmbientLift * 0.12 + uPaletteEnergy * 0.08 + radialBands * 0.08);
+  outerColor += seamColor * sliceBloom * (0.03 + mirrorBloom * 0.02);
+  outerColor += crustGlow * (0.02 + radialBands * 0.04);
+  outerColor = boostSaturation(outerColor, 0.82 + mirrorBloom * 0.08);
 
   vec3 discColor = color;
 
@@ -358,15 +431,177 @@ vec3 applyPizzaComposition(vec3 color, vec2 fragCoord) {
   discColor = mix(discColor, background, hubMask * 0.58);
   discColor += hubGlow * hubRing;
 
+  // Three radial zones keep the disc as the anchor while the same wedge symmetry
+  // spills outward into a softer halo and outer field.
   vec3 exterior = background;
-  exterior = mix(exterior, haloColor, haloMask * 0.88);
-  exterior = mix(exterior, outerColor, outerFieldMask * exteriorReach);
+  exterior = mix(exterior, haloColor, haloMask * 0.78);
+  exterior = mix(exterior, outerColor, outerFieldMask * exteriorReach * 0.92);
 
   return mix(exterior, discColor, discMask);
 }
 
+CoinProjection projectCoinDisc(vec2 fragCoord) {
+  CoinProjection projection;
+  projection.discUv = vec2(0.0);
+  projection.radius = 10.0;
+  projection.valid = 0.0;
+  projection.discMask = 0.0;
+  projection.edgeFacing = 0.0;
+  projection.frontFacing = 1.0;
+
+  vec2 screen = (fragCoord - uResolution * 0.5) / max(uResolution.y, 0.0001);
+  float cameraDistance = 2.35;
+  vec3 rayOrigin = vec3(0.0, 0.0, cameraDistance);
+  vec3 imagePoint = vec3(screen, 0.0);
+  vec3 rayDirection = normalize(imagePoint - rayOrigin);
+  vec3 tangent = applyCoinRotation(vec3(1.0, 0.0, 0.0));
+  vec3 bitangent = applyCoinRotation(vec3(0.0, 1.0, 0.0));
+  vec3 normal = applyCoinRotation(vec3(0.0, 0.0, 1.0));
+  vec3 planeCenter = vec3(uCoinOffset, -uCoinDepth);
+  float denominator = dot(rayDirection, normal);
+
+  if (abs(denominator) < 0.0001) {
+    return projection;
+  }
+
+  float rayDistance = dot(planeCenter - rayOrigin, normal) / denominator;
+
+  if (rayDistance <= 0.0) {
+    return projection;
+  }
+
+  vec3 hit = rayOrigin + rayDirection * rayDistance;
+  vec3 relative = hit - planeCenter;
+  vec2 discUv = vec2(dot(relative, tangent), dot(relative, bitangent)) / max(uCoinRadius, 0.0001);
+  vec3 viewDirection = normalize(rayOrigin - hit);
+  float facing = clamp(abs(dot(normal, viewDirection)), 0.0, 1.0);
+  float edgeFacing = 1.0 - facing;
+  float edgeSoftness = mix(0.018, 0.045, edgeFacing);
+
+  projection.discUv = discUv;
+  projection.radius = length(discUv);
+  projection.valid = 1.0;
+  projection.discMask = 1.0 - smoothstep(1.0 - edgeSoftness, 1.0 + edgeSoftness, projection.radius);
+  projection.edgeFacing = edgeFacing;
+  projection.frontFacing = step(0.0, dot(normal, viewDirection));
+
+  return projection;
+}
+
+vec3 applyCoinComposition(vec3 color, CoinProjection projection) {
+  float radius;
+  float sliceIndex;
+  float canonicalAngle;
+  float seamDistance;
+  float sliceAngle;
+  float slicePhase;
+  pizzaSymmetryDataFromDiscUv(projection.discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
+
+  float halfSlice = max(sliceAngle * 0.5, 0.0001);
+  float wedgeCoord = canonicalAngle / halfSlice;
+  float seamShadow = (1.0 - smoothstep(0.04, 0.18, seamDistance)) * smoothstep(0.12, 0.96, radius);
+  float seamGlow = (1.0 - smoothstep(0.0, 0.12, seamDistance)) * smoothstep(0.16, 0.98, radius);
+  float hubMask = 1.0 - smoothstep(0.05, 0.18, radius);
+  float hubRing = smoothstep(0.08, 0.12, radius) * (1.0 - smoothstep(0.15, 0.21, radius));
+  float rim = smoothstep(0.82, 0.94, radius) * (1.0 - smoothstep(0.97, 1.01, radius));
+  float backFace = 1.0 - projection.frontFacing;
+  float sheenPhase = slicePhase + radius * (8.4 + uPizzaWarp * 1.8) - uPizzaMorph * 0.18 + uCoinSpin * 0.22;
+  float rimSweep = 0.5 + 0.5 * cos(sheenPhase + wedgeCoord * 1.6);
+  float discGradient = 0.84 + (0.5 + 0.5 * projection.discUv.y) * 0.1 + (0.5 + 0.5 * projection.discUv.x) * 0.04;
+  float discLuma;
+  vec3 background = vec3(0.005, 0.007, 0.012);
+  vec3 seamColor = vec3(0.028, 0.022, 0.038) + vec3(0.08, 0.055, 0.04) * (0.18 + uPaletteEnergy * 0.12);
+  vec3 rimColor =
+    vec3(0.34, 0.25, 0.18) * (0.36 + projection.edgeFacing * 0.34) +
+    vec3(0.92, 0.78, 0.58) * (0.04 + uCoinShimmer * 0.18 + rimSweep * 0.08);
+  vec3 hubGlow = vec3(0.11, 0.12, 0.16) * (0.08 + uAmbientLift * 0.12 + projection.frontFacing * 0.06);
+  vec3 discColor = boostSaturation(color, 0.98 + uCoinShimmer * 0.08);
+
+  discColor *= discGradient * mix(0.82, 1.04, projection.frontFacing);
+  discColor *= 1.0 - seamShadow * 0.16;
+  discColor = mix(discColor, seamColor, seamGlow * (0.08 + projection.edgeFacing * 0.06));
+  discColor += rimColor * rim;
+  discColor = mix(discColor, background, hubMask * 0.62);
+  discColor += hubGlow * hubRing;
+  discLuma = dot(discColor, vec3(0.2126, 0.7152, 0.0722));
+  discColor = mix(discColor, vec3(discLuma * 0.8, discLuma * 0.84, discLuma * 0.94), backFace * (0.14 + projection.edgeFacing * 0.08));
+
+  return discColor;
+}
+
+vec3 sampleCoinDiscColorAtFrag(vec2 fragCoord) {
+  CoinProjection projection = projectCoinDisc(fragCoord);
+
+  if (projection.valid < 0.5 || projection.discMask <= 0.0001) {
+    return vec3(0.004, 0.006, 0.011);
+  }
+
+  vec2 paletteUv;
+  float paletteOffset;
+  FractalSample sample = samplePizzaField(projection.discUv, 0.0, paletteUv, paletteOffset);
+  return applyCoinComposition(colorize(sample, paletteUv, paletteOffset), projection);
+}
+
+vec3 shadeCoinAtFrag(vec2 fragCoord) {
+  CoinProjection projection = projectCoinDisc(fragCoord);
+  vec3 background = vec3(0.004, 0.006, 0.011);
+
+  if (projection.valid < 0.5) {
+    return background;
+  }
+
+  float farMask = 1.0 - smoothstep(1.18 + projection.edgeFacing * 0.18, 1.36 + projection.edgeFacing * 0.28, projection.radius);
+
+  if (farMask <= 0.0001) {
+    return background;
+  }
+
+  vec3 color = background;
+
+  if (projection.discMask > 0.0001) {
+    vec3 discColor = sampleCoinDiscColorAtFrag(fragCoord);
+
+    if (uStableAA > 0.01) {
+      vec3 paired = 0.5 * (
+        sampleCoinDiscColorAtFrag(fragCoord + vec2(-0.24, 0.24)) +
+        sampleCoinDiscColorAtFrag(fragCoord + vec2(0.24, -0.24))
+      );
+      discColor = mix(discColor, paired, clamp((0.16 + uStableAA * 0.2) * projection.discMask, 0.0, 0.44));
+    }
+
+    color = mix(color, discColor, projection.discMask);
+  }
+
+  float rimSweep = 0.5 + 0.5 * cos(projection.discUv.y * 7.0 - projection.discUv.x * 4.0 + uPizzaMorph * 0.22 + uCoinSpin * 0.36);
+  float outerRim =
+    smoothstep(1.0, 1.04 + projection.edgeFacing * 0.05, projection.radius) *
+    (1.0 - smoothstep(1.1 + projection.edgeFacing * 0.12, 1.24 + projection.edgeFacing * 0.24, projection.radius));
+  float innerRim =
+    smoothstep(0.82, 0.98, projection.radius) *
+    (1.0 - smoothstep(0.99, 1.04, projection.radius));
+  float edgeDarken = smoothstep(0.86, 1.0, projection.radius) * mix(0.04, 0.2, projection.edgeFacing);
+  vec3 rimColor =
+    vec3(0.2, 0.16, 0.12) * (0.24 + projection.edgeFacing * 0.42) +
+    vec3(0.95, 0.82, 0.6) * (0.04 + uCoinShimmer * 0.2 + rimSweep * 0.08);
+  vec3 outerGlowColor =
+    vec3(0.22, 0.17, 0.14) * (0.12 + projection.edgeFacing * 0.24) +
+    vec3(0.88, 0.76, 0.58) * (0.02 + uCoinShimmer * 0.12);
+
+  color = mix(color, background * 0.82, edgeDarken * projection.discMask);
+  color += rimColor * innerRim * (0.08 + projection.edgeFacing * 0.18);
+  color += outerGlowColor * outerRim * (0.08 + projection.edgeFacing * 0.24 + uCoinShimmer * 0.1);
+
+  return mix(background, color, farMask);
+}
+
 void main() {
   vec2 frag = gl_FragCoord.xy;
+
+  if (uLayoutMode > 1.5) {
+    gl_FragColor = vec4(shadeCoinAtFrag(frag), 1.0);
+    return;
+  }
+
   vec2 paletteUv;
   float paletteOffset;
   FractalSample centerSample = sampleAtFrag(frag, paletteUv, paletteOffset);
@@ -550,11 +785,36 @@ type AudioResponseState = {
 type TraversalMode = "explore" | "dissolve" | "transit" | "reveal";
 type VoidTransitionStyle = "fade" | "zoom" | "turn";
 type PizzaSymmetryGroup = "cyclic" | "dihedral";
+type CoinMotionPhase = "idle" | "launch" | "flip" | "settle";
 type PizzaSymmetryState = {
   group: PizzaSymmetryGroup;
   order: number;
   modeIndex: number;
   strength: number;
+};
+
+type CoinMotionState = {
+  phase: CoinMotionPhase;
+  phaseElapsed: number;
+  phaseDuration: number;
+  tiltX: number;
+  tiltY: number;
+  targetTiltX: number;
+  targetTiltY: number;
+  spin: number;
+  spinVelocity: number;
+  precession: number;
+  wobble: number;
+  wobblePhase: number;
+  flip: number;
+  flipVelocity: number;
+  lift: number;
+  offsetX: number;
+  offsetY: number;
+  shimmer: number;
+  settle: number;
+  impulseCooldown: number;
+  lastTriggerSignal: number;
 };
 
 type TraversalState = {
@@ -663,6 +923,14 @@ type FractalUniforms = {
   symmetryGroup: WebGLUniformLocation | null;
   symmetryMode: WebGLUniformLocation | null;
   symmetryStrength: WebGLUniformLocation | null;
+  coinTilt: WebGLUniformLocation | null;
+  coinSpin: WebGLUniformLocation | null;
+  coinPrecession: WebGLUniformLocation | null;
+  coinFlip: WebGLUniformLocation | null;
+  coinDepth: WebGLUniformLocation | null;
+  coinRadius: WebGLUniformLocation | null;
+  coinOffset: WebGLUniformLocation | null;
+  coinShimmer: WebGLUniformLocation | null;
 };
 
 type CompositeUniforms = {
@@ -789,6 +1057,15 @@ function angleDelta(a: number, b: number) {
 
 function dampAngle(current: number, target: number, smoothing: number, deltaSeconds: number) {
   return current + angleDelta(target, current) * (1 - Math.exp(-smoothing * deltaSeconds));
+}
+
+function wrapAngle(angle: number) {
+  let wrapped = angle % TAU;
+
+  if (wrapped > Math.PI) wrapped -= TAU;
+  if (wrapped < -Math.PI) wrapped += TAU;
+
+  return wrapped;
 }
 
 function copyViewport(camera: FractalViewport): FractalViewport {
@@ -1167,6 +1444,32 @@ function createFractalMutationState(): FractalMutationState {
   };
 }
 
+function createCoinMotionState(): CoinMotionState {
+  return {
+    phase: "idle",
+    phaseElapsed: 0,
+    phaseDuration: 1,
+    tiltX: 0.18,
+    tiltY: -0.24,
+    targetTiltX: 0.18,
+    targetTiltY: -0.24,
+    spin: 0,
+    spinVelocity: 0.42,
+    precession: 0.08,
+    wobble: 0.08,
+    wobblePhase: 0,
+    flip: 0,
+    flipVelocity: 0,
+    lift: 0.06,
+    offsetX: 0,
+    offsetY: -0.02,
+    shimmer: 0.18,
+    settle: 1,
+    impulseCooldown: 0.12,
+    lastTriggerSignal: 0,
+  };
+}
+
 const family = createMandelbrotFamily();
 const renderState: RenderState = {
   canvas: null,
@@ -1196,6 +1499,7 @@ const audio = createAudioState();
 const traversal = createTraversalState(family);
 const interest = createInterestState();
 const fractalMutation = createFractalMutationState();
+const coinMotion = createCoinMotionState();
 const reusableInterestSample: MutableFractalSample = {
   escaped: false,
   smooth: 0,
@@ -1220,7 +1524,11 @@ const fractalLayoutMode = computed<FractalTraverseLayoutMode>(() => {
 });
 
 const isPizzaLayout = computed(() => {
-  return fractalLayoutMode.value === "pizza-kaleido";
+  return fractalLayoutMode.value === "pizza-kaleido" || fractalLayoutMode.value === "pizza-coin";
+});
+
+const isCoinLayout = computed(() => {
+  return fractalLayoutMode.value === "pizza-coin";
 });
 
 const pizzaSliceCount = computed(() => {
@@ -1302,6 +1610,10 @@ function resetFractalMutationState() {
   fractalMutation.desiredSpeed = 0.2;
   fractalMutation.speed = 0.2;
   fractalMutation.parameters = copyFractalParameters(FRACTAL_PRESETS[0]);
+}
+
+function resetCoinMotionState() {
+  Object.assign(coinMotion, createCoinMotionState());
 }
 
 function resetTraversalState() {
@@ -1814,6 +2126,14 @@ function ensureRenderer() {
     symmetryGroup: context.getUniformLocation(fractalProgram, "uSymmetryGroup"),
     symmetryMode: context.getUniformLocation(fractalProgram, "uSymmetryMode"),
     symmetryStrength: context.getUniformLocation(fractalProgram, "uSymmetryStrength"),
+    coinTilt: context.getUniformLocation(fractalProgram, "uCoinTilt"),
+    coinSpin: context.getUniformLocation(fractalProgram, "uCoinSpin"),
+    coinPrecession: context.getUniformLocation(fractalProgram, "uCoinPrecession"),
+    coinFlip: context.getUniformLocation(fractalProgram, "uCoinFlip"),
+    coinDepth: context.getUniformLocation(fractalProgram, "uCoinDepth"),
+    coinRadius: context.getUniformLocation(fractalProgram, "uCoinRadius"),
+    coinOffset: context.getUniformLocation(fractalProgram, "uCoinOffset"),
+    coinShimmer: context.getUniformLocation(fractalProgram, "uCoinShimmer"),
   };
   renderState.compositeUniforms = {
     currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
@@ -2310,6 +2630,177 @@ function updateAudioResponse(deltaSeconds: number) {
   );
 }
 
+function updateCoinMotion(deltaSeconds: number, now: number) {
+  const pulseConfidence = pulse.confidence;
+  const pulseImpact = pulse.impact * pulseConfidence;
+  const pulseAnticipation = pulse.anticipation * pulseConfidence;
+  const reactivity = clamp(0.58 + ((strength.value - 0.35) / 1) * 0.92, 0.58, 1.5);
+  const launchKick = clamp(pulseImpact * 0.82 + audio.bassDrive * 0.36 + audio.surge * 0.22, 0, 1.4);
+  const flipSignal = clamp(
+    pulseImpact * 0.78 + audio.noveltySmoothed * 0.52 + audio.spectralFlux * 0.44 + audio.highDrive * 0.14,
+    0,
+    1.6
+  );
+  const triggerSignal = clamp(launchKick * 0.64 + flipSignal * 0.36, 0, 1.8);
+  const triggerRise = Math.max(0, triggerSignal - coinMotion.lastTriggerSignal);
+  const phasePunch =
+    coinMotion.phase === "flip" ? 1 : coinMotion.phase === "launch" ? 0.58 : coinMotion.phase === "settle" ? 0.26 : 0;
+  const launchDirectionX =
+    Math.sin(now * 0.0013 + traversal.segmentSeed * TAU * 0.8 + traversal.palettePhase * TAU * 0.5) >= 0 ? 1 : -1;
+  const launchDirectionY =
+    Math.cos(now * 0.0011 + traversal.segmentSeed * TAU * 0.6 + traversal.driftPhase * 0.7) >= 0 ? 1 : -1;
+
+  coinMotion.phaseElapsed += deltaSeconds;
+  coinMotion.impulseCooldown = Math.max(0, coinMotion.impulseCooldown - deltaSeconds);
+  coinMotion.lastTriggerSignal = triggerSignal;
+
+  const shouldTriggerFlip =
+    coinMotion.impulseCooldown <= 0 &&
+    triggerRise > 0.11 &&
+    launchKick > 0.44 &&
+    (flipSignal > 0.78 || audio.surge > 0.62);
+  const shouldTriggerLaunch = coinMotion.impulseCooldown <= 0 && triggerRise > 0.09 && launchKick > 0.42;
+
+  if (shouldTriggerFlip) {
+    coinMotion.phase = "flip";
+    coinMotion.phaseElapsed = 0;
+    coinMotion.phaseDuration = lerp(0.92, 1.58, clamp(flipSignal * 0.7 + audio.bassDrive * 0.3, 0, 1));
+    coinMotion.impulseCooldown = lerp(0.38, 0.82, clamp(flipSignal * 0.76 + launchKick * 0.24, 0, 1));
+    coinMotion.targetTiltX = clamp(
+      coinMotion.targetTiltX + launchDirectionX * (0.26 + launchKick * 0.34 + pulseAnticipation * 0.18),
+      -1.05,
+      1.05
+    );
+    coinMotion.targetTiltY = clamp(
+      coinMotion.targetTiltY + launchDirectionY * (0.32 + audio.midDrive * 0.22 + audio.noveltySmoothed * 0.16),
+      -1.18,
+      1.18
+    );
+    coinMotion.spinVelocity += launchDirectionY * (1.8 + audio.highDrive * 1.4 + flipSignal * 2.6) * reactivity;
+    coinMotion.flipVelocity += launchDirectionX * (3.2 + flipSignal * 4.8) * reactivity;
+    coinMotion.wobble = clamp(coinMotion.wobble + 0.22 + audio.midDrive * 0.16 + audio.noveltySmoothed * 0.12, 0.08, 0.92);
+    coinMotion.lift = clamp(Math.max(coinMotion.lift, 0.18 + launchKick * 0.26), 0, 0.78);
+  } else if (shouldTriggerLaunch) {
+    coinMotion.phase = "launch";
+    coinMotion.phaseElapsed = 0;
+    coinMotion.phaseDuration = lerp(0.48, 0.94, clamp(launchKick * 0.74 + pulseAnticipation * 0.26, 0, 1));
+    coinMotion.impulseCooldown = lerp(0.24, 0.58, clamp(launchKick, 0, 1));
+    coinMotion.targetTiltX = clamp(
+      coinMotion.targetTiltX + launchDirectionX * (0.14 + launchKick * 0.18 + pulseAnticipation * 0.16),
+      -0.9,
+      0.9
+    );
+    coinMotion.targetTiltY = clamp(
+      coinMotion.targetTiltY + launchDirectionY * (0.18 + audio.midDrive * 0.12 + pulseImpact * 0.18),
+      -0.98,
+      0.98
+    );
+    coinMotion.spinVelocity += launchDirectionY * (0.92 + audio.highDrive * 0.62 + launchKick * 1.2) * reactivity;
+    coinMotion.flipVelocity += launchDirectionX * (0.88 + launchKick * 1.6 + audio.noveltySmoothed * 1.1) * reactivity;
+    coinMotion.wobble = clamp(coinMotion.wobble + 0.1 + audio.midDrive * 0.08, 0.06, 0.72);
+    coinMotion.lift = clamp(Math.max(coinMotion.lift, 0.1 + launchKick * 0.18), 0, 0.62);
+  }
+
+  if (coinMotion.phase === "launch" && coinMotion.phaseElapsed >= coinMotion.phaseDuration) {
+    coinMotion.phase = Math.abs(coinMotion.flipVelocity) > 2.6 ? "flip" : "settle";
+    coinMotion.phaseElapsed = 0;
+    coinMotion.phaseDuration = coinMotion.phase === "flip" ? 0.82 : 1.4 + coinMotion.wobble * 0.6;
+  } else if (coinMotion.phase === "flip" && coinMotion.phaseElapsed >= coinMotion.phaseDuration) {
+    coinMotion.phase = "settle";
+    coinMotion.phaseElapsed = 0;
+    coinMotion.phaseDuration = 1.4 + coinMotion.wobble * 0.8;
+  } else if (
+    coinMotion.phase === "settle" &&
+    coinMotion.phaseElapsed >= coinMotion.phaseDuration &&
+    coinMotion.wobble < 0.12 &&
+    Math.abs(coinMotion.flipVelocity) < 0.35
+  ) {
+    coinMotion.phase = "idle";
+    coinMotion.phaseElapsed = 0;
+    coinMotion.phaseDuration = 1;
+  }
+
+  const idleDriftTime = now * 0.001;
+  const idleTiltX =
+    0.16 +
+    Math.sin(idleDriftTime * 0.74 + traversal.driftPhase * 0.82) * (0.07 + audio.midDrive * 0.03) -
+    pulseAnticipation * 0.14;
+  const idleTiltY =
+    -0.18 +
+    Math.cos(idleDriftTime * 0.58 + traversal.bendPhase * 0.76) * (0.16 + audio.highDrive * 0.04) +
+    pulseAnticipation * 0.09;
+  const preLeanX = -pulseAnticipation * (0.08 + audio.bassDrive * 0.1);
+  const preLeanY = pulseAnticipation * (0.04 + audio.midDrive * 0.06);
+  const targetResponse = coinMotion.phase === "idle" ? 1.5 : coinMotion.phase === "settle" ? 1.1 : 0.84;
+
+  coinMotion.targetTiltX = damp(coinMotion.targetTiltX, idleTiltX + preLeanX, targetResponse, deltaSeconds);
+  coinMotion.targetTiltY = damp(coinMotion.targetTiltY, idleTiltY + preLeanY, targetResponse, deltaSeconds);
+
+  const wobbleTarget = clamp(
+    0.04 + audio.midDrive * 0.14 + audio.spectralFlux * 0.08 + pulseAnticipation * 0.06 + phasePunch * 0.24,
+    0.04,
+    0.88
+  );
+  const wobbleResponse = coinMotion.phase === "flip" ? 1.2 : coinMotion.phase === "settle" ? 1.9 : 1.4;
+  coinMotion.wobble = damp(coinMotion.wobble, wobbleTarget, wobbleResponse, deltaSeconds);
+  coinMotion.wobblePhase =
+    (coinMotion.wobblePhase +
+      deltaSeconds * (0.48 + audio.midDrive * 1.5 + audio.noveltySmoothed * 0.4 + coinMotion.wobble * 1.3)) %
+    TAU;
+  coinMotion.precession = wrapAngle(
+    coinMotion.precession +
+      deltaSeconds * (0.22 + audio.midDrive * 0.72 + audio.spectralFlux * 0.2 + coinMotion.wobble * 0.85 + phasePunch * 0.46)
+  );
+
+  const wobbleX = Math.sin(coinMotion.wobblePhase) * coinMotion.wobble * (0.18 + audio.midDrive * 0.1);
+  const wobbleY = Math.cos(coinMotion.wobblePhase * 0.92 + 0.6) * coinMotion.wobble * (0.24 + audio.midDrive * 0.12);
+  const tiltResponse = coinMotion.phase === "flip" ? 4.4 : coinMotion.phase === "launch" ? 3.2 : coinMotion.phase === "settle" ? 2.1 : 1.8;
+
+  coinMotion.tiltX = damp(coinMotion.tiltX, clamp(coinMotion.targetTiltX + wobbleX, -1.45, 1.45), tiltResponse, deltaSeconds);
+  coinMotion.tiltY = damp(coinMotion.tiltY, clamp(coinMotion.targetTiltY + wobbleY, -1.48, 1.48), tiltResponse, deltaSeconds);
+
+  const spinSign = coinMotion.spinVelocity >= 0 ? 1 : -1;
+  const spinBase = (0.34 + audio.energy * 0.54 + audio.highDrive * 0.18 + pulseImpact * 0.12) * reactivity;
+  const spinTarget = spinSign * (spinBase + phasePunch * 1.2 + pulseImpact * 0.42);
+  const spinResponse = coinMotion.phase === "flip" ? 1.8 : coinMotion.phase === "settle" ? 2.4 : 1.2;
+
+  coinMotion.spinVelocity = damp(coinMotion.spinVelocity, spinTarget, spinResponse, deltaSeconds);
+  coinMotion.spin = wrapAngle(coinMotion.spin + coinMotion.spinVelocity * deltaSeconds);
+
+  const flipDamping = coinMotion.phase === "flip" ? 0.82 : coinMotion.phase === "launch" ? 1.4 : coinMotion.phase === "settle" ? 2.8 : 4.2;
+  coinMotion.flip += coinMotion.flipVelocity * deltaSeconds;
+  coinMotion.flipVelocity *= Math.exp(-flipDamping * deltaSeconds);
+  coinMotion.flip = wrapAngle(coinMotion.flip);
+
+  if (coinMotion.phase === "idle") {
+    coinMotion.flip = dampAngle(coinMotion.flip, 0, 3.6, deltaSeconds);
+  }
+
+  const liftTarget = clamp(0.04 + audio.bassDrive * 0.12 + pulseImpact * 0.18 + phasePunch * 0.16, 0.04, 0.74);
+  const liftResponse = coinMotion.phase === "flip" ? 3.8 : coinMotion.phase === "launch" ? 3.1 : 2;
+  coinMotion.lift = damp(coinMotion.lift, liftTarget, liftResponse, deltaSeconds);
+
+  const offsetXTarget = clamp(Math.sin(coinMotion.precession) * coinMotion.tiltY * 0.04 - pulseAnticipation * 0.028, -0.12, 0.12);
+  const offsetYTarget = clamp(
+    -0.02 - coinMotion.lift * 0.09 + Math.cos(coinMotion.precession * 0.7) * coinMotion.tiltX * 0.03 - pulseAnticipation * 0.02,
+    -0.16,
+    0.08
+  );
+
+  coinMotion.offsetX = damp(coinMotion.offsetX, offsetXTarget, 2.3, deltaSeconds);
+  coinMotion.offsetY = damp(coinMotion.offsetY, offsetYTarget, 2.3, deltaSeconds);
+
+  const shimmerTarget = clamp(
+    0.12 + audio.highDrive * 0.34 + pulseImpact * 0.18 + pulseAnticipation * 0.12 + Math.abs(coinMotion.flipVelocity) * 0.04,
+    0.12,
+    0.95
+  );
+  coinMotion.shimmer = damp(coinMotion.shimmer, shimmerTarget, 4.8, deltaSeconds);
+
+  const settleTarget = coinMotion.phase === "idle" ? 1 : coinMotion.phase === "settle" ? 0.62 : 0.18;
+  coinMotion.settle = damp(coinMotion.settle, settleTarget, 2.2, deltaSeconds);
+}
+
 function updateTraversal(deltaSeconds: number, now: number) {
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
   const aspectRatio = getViewportAspectRatio();
@@ -2541,6 +3032,7 @@ function renderFractal(deltaSeconds: number) {
   const currentWidth = Math.max(1, Math.round(renderState.displayWidth * quality.renderScale));
   const currentHeight = Math.max(1, Math.round(renderState.displayHeight * quality.renderScale));
   const pizzaLayoutMix = isPizzaLayout.value ? 1 : 0;
+  const layoutModeValue = isCoinLayout.value ? 2 : pizzaLayoutMix;
   const pizzaWarp = isPizzaLayout.value
     ? clamp(0.14 + audio.bend * 0.1 + audio.highDrive * 0.06 + audio.spectralFlux * 0.05 + pizzaSymmetry.strength * 0.04 + pulseAnticipation * 0.05, 0.14, 0.42)
     : 0;
@@ -2553,6 +3045,13 @@ function renderFractal(deltaSeconds: number) {
     audio.spectralFlux * 0.7 +
     pulseImpact * 0.28 +
     pulseAnticipation * 0.12;
+  const coinRadius = clamp(0.78 + coinMotion.lift * 0.08 + audio.zoom * 0.02 + pulseImpact * 0.02, 0.74, 0.94);
+  const coinDepth = clamp(0.98 - coinMotion.lift * 0.34 - pulseImpact * 0.06, 0.72, 1.16);
+  const coinOffset = {
+    x: coinMotion.offsetX + Math.sin(coinMotion.precession * 0.45) * 0.008 * (1 - coinMotion.settle),
+    y: coinMotion.offsetY,
+  };
+  const coinShimmer = clamp(0.16 + coinMotion.shimmer * 0.72 + audio.highDrive * 0.08 + pulseGlow * 0.04, 0.16, 0.98);
 
   if (
     !ensureRenderTarget(gl, renderState.currentTarget, currentWidth, currentHeight, gl.LINEAR) ||
@@ -2591,7 +3090,7 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.paletteBias, fractalMutation.parameters.paletteBias);
   gl.uniform1f(fractalUniforms.voidFade, traversal.voidMix);
   gl.uniform1f(fractalUniforms.voidCollapse, traversal.voidCollapse);
-  gl.uniform1f(fractalUniforms.layoutMode, pizzaLayoutMix);
+  gl.uniform1f(fractalUniforms.layoutMode, layoutModeValue);
   gl.uniform1f(fractalUniforms.sliceCount, pizzaSymmetry.order);
   gl.uniform1f(fractalUniforms.pizzaWarp, pizzaWarp);
   gl.uniform1f(fractalUniforms.pizzaSpin, pizzaSpin);
@@ -2599,6 +3098,14 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.symmetryGroup, pizzaSymmetry.group === "dihedral" ? 1 : 0);
   gl.uniform1f(fractalUniforms.symmetryMode, pizzaSymmetry.modeIndex);
   gl.uniform1f(fractalUniforms.symmetryStrength, pizzaSymmetry.strength);
+  gl.uniform2f(fractalUniforms.coinTilt, coinMotion.tiltX, coinMotion.tiltY);
+  gl.uniform1f(fractalUniforms.coinSpin, coinMotion.spin);
+  gl.uniform1f(fractalUniforms.coinPrecession, wrapAngle(coinMotion.precession + traversal.palettePhase * TAU * 0.04));
+  gl.uniform1f(fractalUniforms.coinFlip, coinMotion.flip);
+  gl.uniform1f(fractalUniforms.coinDepth, coinDepth);
+  gl.uniform1f(fractalUniforms.coinRadius, coinRadius);
+  gl.uniform2f(fractalUniforms.coinOffset, coinOffset.x, coinOffset.y);
+  gl.uniform1f(fractalUniforms.coinShimmer, coinShimmer);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
@@ -2672,6 +3179,7 @@ function animate(now: number) {
   lastFrameTime = now;
 
   updateAudioResponse(deltaSeconds);
+  updateCoinMotion(deltaSeconds, now);
   updateFractalMutation(deltaSeconds);
   updateTraversal(deltaSeconds, now);
 
@@ -2688,6 +3196,7 @@ watch(
       resetAudioState();
       resetInterestState();
       resetFractalMutationState();
+      resetCoinMotionState();
       lastFrameTime = 0;
       return;
     }
@@ -2696,6 +3205,7 @@ watch(
     resetInterestState();
     resetAudioState();
     resetFractalMutationState();
+    resetCoinMotionState();
     lastFrameTime = 0;
     lastRenderTime = 0;
   },
@@ -2734,6 +3244,7 @@ watch(
     resetAudioState();
     resetInterestState();
     resetFractalMutationState();
+    resetCoinMotionState();
     resetTemporalState();
     lastFrameTime = 0;
   }
@@ -2743,6 +3254,7 @@ watch(
   () => fractalLayoutMode.value,
   () => {
     resetTemporalState();
+    resetCoinMotionState();
     interest.lowInterestTime = 0;
     interest.focusTargetHoldUntil = 0;
     traversal.voidMix = 0;

@@ -3,7 +3,7 @@ import { ref, watch } from "vue";
 
 export const VISUALIZATION_MODES = ["classic", "fractal-traverse"] as const;
 export type VisualizationMode = (typeof VISUALIZATION_MODES)[number];
-export const FRACTAL_TRAVERSE_LAYOUT_MODES = ["full-frame", "pizza-kaleido"] as const;
+export const FRACTAL_TRAVERSE_LAYOUT_MODES = ["full-frame", "pizza-kaleido", "pizza-coin"] as const;
 export type FractalTraverseLayoutMode = (typeof FRACTAL_TRAVERSE_LAYOUT_MODES)[number];
 
 function createPersistedBoolean(key: string, fallback: boolean) {

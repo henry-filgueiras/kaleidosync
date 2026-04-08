@@ -81,7 +81,9 @@ import {
 const router = useRouter();
 const settings = useVisualizerSettings();
 const isFractalMode = computed(() => settings.visualizationMode === "fractal-traverse");
-const isPizzaLayout = computed(() => settings.fractalTraverseLayoutMode === "pizza-kaleido");
+const isPizzaLayout = computed(() => {
+  return settings.fractalTraverseLayoutMode === "pizza-kaleido" || settings.fractalTraverseLayoutMode === "pizza-coin";
+});
 const visualizationModes: Array<{ label: string; value: VisualizationMode }> = [
   { label: "Classic", value: "classic" },
   { label: "Fractal Traverse", value: "fractal-traverse" },
@@ -89,6 +91,7 @@ const visualizationModes: Array<{ label: string; value: VisualizationMode }> = [
 const fractalLayoutModes: Array<{ label: string; value: FractalTraverseLayoutMode }> = [
   { label: "Full Frame", value: "full-frame" },
   { label: "Pizza Kaleido", value: "pizza-kaleido" },
+  { label: "Projected Coin", value: "pizza-coin" },
 ];
 </script>
 
