@@ -529,6 +529,86 @@ vec3 applyCoinComposition(vec3 color, CoinProjection projection) {
   return discColor;
 }
 
+vec2 backdropDiscUvFromFrag(vec2 fragCoord) {
+  vec2 backdropUv = discUvFromFrag(fragCoord) - uCoinOffset * 0.34;
+  float radius = length(backdropUv);
+  float lagSpin = uCoinSpin * 0.18 + uCoinPrecession * 0.62 - uCoinFlip * 0.08;
+  backdropUv = rotate2d(backdropUv, lagSpin);
+
+  float torsion =
+    (uCoinTilt.x * backdropUv.y - uCoinTilt.y * backdropUv.x) * (0.12 + min(radius, 2.4) * 0.08) +
+    sin(radius * (2.6 + uPizzaWarp * 0.7) - uCoinSpin * 0.42 + uCoinPrecession * 1.4) * (0.04 + uCoinShimmer * 0.02);
+  backdropUv = rotate2d(backdropUv, torsion);
+  backdropUv *= 0.92 + uCoinDepth * 0.04;
+  backdropUv +=
+    vec2(
+      sin(uCoinPrecession * 0.84 + uCoinSpin * 0.12),
+      cos(uCoinPrecession * 0.62 - uCoinFlip * 0.28)
+    ) *
+    (0.03 + uCoinShimmer * 0.012);
+
+  return backdropUv;
+}
+
+vec3 applyPizzaBackdropComposition(vec3 color, vec2 discUv) {
+  float radius;
+  float sliceIndex;
+  float canonicalAngle;
+  float seamDistance;
+  float sliceAngle;
+  float slicePhase;
+  pizzaSymmetryDataFromDiscUv(discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
+
+  float halfSlice = max(sliceAngle * 0.5, 0.0001);
+  float wedgeCoord = canonicalAngle / halfSlice;
+  float coreMask = 1.0 - smoothstep(0.78, 1.08, radius);
+  float haloMask = smoothstep(0.68, 1.06, radius) * (1.0 - smoothstep(1.7, 2.18, radius));
+  float outerFieldMask = 1.0 - smoothstep(2.25, 2.95, radius);
+  float seamVeil = (1.0 - smoothstep(0.05, 0.22, seamDistance)) * smoothstep(0.18, 2.2, radius);
+  float bandPhase = canonicalAngle * 5.2 + radius * (3.0 + uPizzaWarp * 1.5) - uPizzaMorph * 0.22 + slicePhase;
+  float mirrorBloom = 0.5 + 0.5 * cos(bandPhase);
+  float sliceBloom = pow(clamp(1.0 - abs(wedgeCoord), 0.0, 1.0), 1.35);
+  float radialBands = 0.5 + 0.5 * cos((radius - 0.72) * (4.6 + uPizzaWarp * 1.4) - uPizzaMorph * 0.18 + slicePhase);
+  float fieldSymmetry = sliceBloom * (0.48 + radialBands * 0.52);
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  vec3 background = vec3(0.006, 0.008, 0.014);
+  vec3 seamColor = vec3(0.026, 0.02, 0.034) + vec3(0.08, 0.055, 0.04) * (0.16 + uPaletteEnergy * 0.08);
+  vec3 ambientColor = mix(vec3(luma * (0.22 + uAmbientLift * 0.1)), color, 0.42);
+  vec3 coreColor;
+  vec3 haloColor;
+  vec3 outerColor;
+  vec3 field;
+
+  ambientColor = boostSaturation(ambientColor, 0.74 + fieldSymmetry * 0.08);
+  coreColor = ambientColor * (0.24 + uAmbientLift * 0.08 + radialBands * 0.05);
+  coreColor += seamColor * seamVeil * 0.02;
+  haloColor = ambientColor * (0.36 + uAmbientLift * 0.14 + fieldSymmetry * 0.08 + radialBands * 0.04);
+  haloColor += seamColor * (0.04 + mirrorBloom * 0.03 + sliceBloom * 0.02);
+  outerColor = mix(vec3(luma * 0.18), ambientColor, 0.38) * (0.22 + radialBands * 0.08 + uAmbientLift * 0.08);
+  outerColor += seamColor * sliceBloom * (0.02 + mirrorBloom * 0.015);
+
+  field = background;
+  field = mix(field, outerColor, outerFieldMask * 0.96);
+  field = mix(field, haloColor, haloMask * 0.54);
+  field = mix(field, coreColor, coreMask * 0.32);
+  field += ambientColor * seamVeil * (0.018 + fieldSymmetry * 0.014);
+
+  return field;
+}
+
+vec3 shadeCoinBackdropAtFrag(vec2 fragCoord) {
+  vec2 backdropUv = backdropDiscUvFromFrag(fragCoord);
+  float radius = length(backdropUv);
+  float continuationMix =
+    clamp(pizzaContinuationMix(radius) * 0.88 + smoothstep(1.34, 2.32, radius) * 0.12, 0.0, 1.0);
+  vec2 paletteUv;
+  float paletteOffset;
+  FractalSample sample = samplePizzaField(backdropUv, continuationMix, paletteUv, paletteOffset);
+  float motionLag = sin(uCoinPrecession * 0.6 - uCoinSpin * 0.14) * 0.01 + uCoinFlip * 0.003;
+  vec3 baseColor = colorize(sample, paletteUv * 0.86 + backdropUv * 0.08, paletteOffset + motionLag);
+  return applyPizzaBackdropComposition(baseColor, backdropUv);
+}
+
 vec3 sampleCoinDiscColorAtFrag(vec2 fragCoord) {
   CoinProjection projection = projectCoinDisc(fragCoord);
 
@@ -544,19 +624,11 @@ vec3 sampleCoinDiscColorAtFrag(vec2 fragCoord) {
 
 vec3 shadeCoinAtFrag(vec2 fragCoord) {
   CoinProjection projection = projectCoinDisc(fragCoord);
-  vec3 background = vec3(0.004, 0.006, 0.011);
+  vec3 color = shadeCoinBackdropAtFrag(fragCoord);
+  float coinInfluence = 1.0 - smoothstep(1.18 + projection.edgeFacing * 0.18, 1.36 + projection.edgeFacing * 0.28, projection.radius);
+  float contactShadow = coinInfluence * (1.0 - smoothstep(0.92, 1.18 + projection.edgeFacing * 0.18, projection.radius));
 
-  if (projection.valid < 0.5) {
-    return background;
-  }
-
-  float farMask = 1.0 - smoothstep(1.18 + projection.edgeFacing * 0.18, 1.36 + projection.edgeFacing * 0.28, projection.radius);
-
-  if (farMask <= 0.0001) {
-    return background;
-  }
-
-  vec3 color = background;
+  color *= 1.0 - contactShadow * (0.05 + projection.edgeFacing * 0.05);
 
   if (projection.discMask > 0.0001) {
     vec3 discColor = sampleCoinDiscColorAtFrag(fragCoord);
@@ -587,11 +659,11 @@ vec3 shadeCoinAtFrag(vec2 fragCoord) {
     vec3(0.22, 0.17, 0.14) * (0.12 + projection.edgeFacing * 0.24) +
     vec3(0.88, 0.76, 0.58) * (0.02 + uCoinShimmer * 0.12);
 
-  color = mix(color, background * 0.82, edgeDarken * projection.discMask);
-  color += rimColor * innerRim * (0.08 + projection.edgeFacing * 0.18);
-  color += outerGlowColor * outerRim * (0.08 + projection.edgeFacing * 0.24 + uCoinShimmer * 0.1);
+  color = mix(color, color * 0.82, edgeDarken * projection.discMask);
+  color += rimColor * innerRim * (0.08 + projection.edgeFacing * 0.18) * coinInfluence;
+  color += outerGlowColor * outerRim * (0.08 + projection.edgeFacing * 0.24 + uCoinShimmer * 0.1) * coinInfluence;
 
-  return mix(background, color, farMask);
+  return color;
 }
 
 void main() {
