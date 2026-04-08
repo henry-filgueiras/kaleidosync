@@ -17,7 +17,7 @@
     </Transition>
 
     <BeatHorizon />
-    <FractalTraverse />
+    <FractalTraverse v-if="settings.visualizationMode === 'fractal-traverse'" />
     <PrismVeil />
     <AudioDebugMeter />
   </View>

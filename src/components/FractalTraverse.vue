@@ -192,11 +192,11 @@ type TraversalState = {
   progress: number;
   segmentDuration: number;
   pathSpeed: number;
-  rotation: number;
   bendPhase: number;
   driftPhase: number;
   palettePhase: number;
   segmentSeed: number;
+  desiredCamera: FractalViewport;
   camera: FractalViewport;
 };
 
@@ -211,13 +211,17 @@ type InterestMetrics = {
 };
 
 type InterestState = {
-  desiredOffset: ComplexPoint;
+  focusTargetOffset: ComplexPoint;
   focusOffset: ComplexPoint;
+  focusTargetScore: number;
+  focusTargetHoldUntil: number;
   desiredZoomGovernor: number;
   zoomGovernor: number;
   desiredZoomPermission: number;
   zoomPermission: number;
+  desiredCurrentScore: number;
   currentScore: number;
+  desiredBestScore: number;
   bestScore: number;
   lowInterestTime: number;
   searchPhase: number;
@@ -295,6 +299,21 @@ function cubicBezierPoint(start: ComplexPoint, controlA: ComplexPoint, controlB:
   };
 }
 
+function cubicBezierTangent(start: ComplexPoint, controlA: ComplexPoint, controlB: ComplexPoint, end: ComplexPoint, amount: number) {
+  const inverse = 1 - amount;
+
+  return {
+    x:
+      3 * inverse * inverse * (controlA.x - start.x) +
+      6 * inverse * amount * (controlB.x - controlA.x) +
+      3 * amount * amount * (end.x - controlB.x),
+    y:
+      3 * inverse * inverse * (controlA.y - start.y) +
+      6 * inverse * amount * (controlB.y - controlA.y) +
+      3 * amount * amount * (end.y - controlB.y),
+  };
+}
+
 function angleDelta(a: number, b: number) {
   let delta = a - b;
 
@@ -302,6 +321,24 @@ function angleDelta(a: number, b: number) {
   while (delta < -Math.PI) delta += Math.PI * 2;
 
   return delta;
+}
+
+function dampAngle(current: number, target: number, smoothing: number, deltaSeconds: number) {
+  return current + angleDelta(target, current) * (1 - Math.exp(-smoothing * deltaSeconds));
+}
+
+function clampVectorMagnitude(point: ComplexPoint, maxMagnitude: number) {
+  const magnitude = Math.hypot(point.x, point.y);
+
+  if (magnitude <= maxMagnitude || magnitude === 0) {
+    return point;
+  }
+
+  const scale = maxMagnitude / magnitude;
+  return {
+    x: point.x * scale,
+    y: point.y * scale,
+  };
 }
 
 function copyViewport(camera: FractalViewport): FractalViewport {
@@ -404,24 +441,28 @@ function createTraversalState(fractalFamily: FractalFamily): TraversalState {
     progress: 0,
     segmentDuration: calculateSegmentDuration(fractalFamily.guidePoints[0], fractalFamily.guidePoints[1]),
     pathSpeed: 1,
-    rotation: camera.rotation,
     bendPhase: 0,
     driftPhase: 0,
     palettePhase: fractalFamily.guidePoints[0].hueOffset,
     segmentSeed: 0.37,
+    desiredCamera: copyViewport(camera),
     camera,
   };
 }
 
 function createInterestState(): InterestState {
   return {
-    desiredOffset: { x: 0, y: 0 },
+    focusTargetOffset: { x: 0, y: 0 },
     focusOffset: { x: 0, y: 0 },
+    focusTargetScore: 0.8,
+    focusTargetHoldUntil: 0,
     desiredZoomGovernor: 1,
     zoomGovernor: 1,
     desiredZoomPermission: 1,
     zoomPermission: 1,
+    desiredCurrentScore: 0.8,
     currentScore: 0.8,
+    desiredBestScore: 0.8,
     bestScore: 0.8,
     lowInterestTime: 0,
     searchPhase: 0.23,
@@ -458,7 +499,7 @@ let lastFrameTime = 0;
 let lastRenderTime = 0;
 
 const visible = computed(() => {
-  return settings.fractalTraverse && sources.source !== null && sources.source !== AudioSource.NONE;
+  return settings.visualizationMode === "fractal-traverse" && sources.source !== null && sources.source !== AudioSource.NONE;
 });
 
 const strength = computed(() => {
@@ -490,13 +531,17 @@ function resetAudioState() {
 }
 
 function resetInterestState() {
-  interest.desiredOffset = { x: 0, y: 0 };
+  interest.focusTargetOffset = { x: 0, y: 0 };
   interest.focusOffset = { x: 0, y: 0 };
+  interest.focusTargetScore = 0.8;
+  interest.focusTargetHoldUntil = 0;
   interest.desiredZoomGovernor = 1;
   interest.zoomGovernor = 1;
   interest.desiredZoomPermission = 1;
   interest.zoomPermission = 1;
+  interest.desiredCurrentScore = 0.8;
   interest.currentScore = 0.8;
+  interest.desiredBestScore = 0.8;
   interest.bestScore = 0.8;
   interest.lowInterestTime = 0;
   interest.searchPhase = 0.23;
@@ -510,11 +555,11 @@ function resetTraversalState() {
   traversal.progress = 0;
   traversal.segmentDuration = calculateSegmentDuration(family.guidePoints[0], family.guidePoints[1]);
   traversal.pathSpeed = 1;
-  traversal.rotation = start.rotation;
   traversal.bendPhase = 0;
   traversal.driftPhase = 0;
   traversal.palettePhase = family.guidePoints[0].hueOffset;
   traversal.segmentSeed = 0.37;
+  traversal.desiredCamera = copyViewport(start);
   traversal.camera = start;
   renderState.lastCamera = null;
   renderState.motion = 0;
@@ -795,12 +840,18 @@ function evaluateInterest(center: ComplexPoint, scale: number, aspectRatio: numb
   };
 }
 
+function getCorrectionLimit(scale: number, lowInterestTime: number) {
+  // Local interest guidance stays subordinate to the main bezier rail, even when rescuing
+  // a dull region, so the camera reads as forward travel instead of sideways chasing.
+  return scale * clamp(0.09 + lowInterestTime * 0.02, 0.09, 0.16);
+}
+
 function scanNearbyInterest(baseCenter: ComplexPoint, baseScale: number, aspectRatio: number) {
   const base = evaluateInterest(baseCenter, baseScale, aspectRatio);
   const lowInterest = base.score < 0.54 || interest.lowInterestTime > 0.3;
-  const searchRadius = clamp(baseScale * (lowInterest ? 0.82 : 0.58), 0.02, 0.84);
-  const scaleFactors = lowInterest ? [1.24, 1.08, 1, 0.92] : [1.08, 1, 0.92];
-  const ringFactors = [0, 0.42, 0.76];
+  const searchRadius = clamp(baseScale * (lowInterest ? 0.58 : 0.38), 0.014, 0.52);
+  const scaleFactors = lowInterest ? [1.18, 1.06, 1, 0.94] : [1.06, 1, 0.94];
+  const ringFactors = [0, 0.34, 0.62];
   let best = base;
 
   for (const ringFactor of ringFactors) {
@@ -822,8 +873,8 @@ function scanNearbyInterest(baseCenter: ComplexPoint, baseScale: number, aspectR
         const candidateScale = clamp(baseScale * scaleFactor, 0.02, 3.2);
         const metrics = evaluateInterest(candidateCenter, candidateScale, aspectRatio);
         const continuityPenalty =
-          (ringFactor > 0 ? ringFactor * 0.06 : 0) +
-          Math.abs(Math.log(candidateScale / baseScale)) * 0.1;
+          (ringFactor > 0 ? ringFactor * 0.08 : 0) +
+          Math.abs(Math.log(candidateScale / baseScale)) * 0.08;
         const adjustedScore = metrics.score - continuityPenalty;
 
         if (adjustedScore > best.score) {
@@ -841,52 +892,86 @@ function scanNearbyInterest(baseCenter: ComplexPoint, baseScale: number, aspectR
 
 function updateInterestGuidance(baseCenter: ComplexPoint, baseScale: number, deltaSeconds: number, now: number) {
   const aspectRatio = Math.max((viewport.width || window.innerWidth || 1) / Math.max(viewport.height || window.innerHeight || 1, 1), 0.6);
+  const correctionLimit = getCorrectionLimit(baseScale, interest.lowInterestTime);
 
-  if (!interest.lastEvaluationAt || now - interest.lastEvaluationAt >= 560) {
+  if (!interest.lastEvaluationAt || now - interest.lastEvaluationAt >= 360) {
     const { base, best } = scanNearbyInterest(baseCenter, baseScale, aspectRatio);
-    const betterNearby = best.score > base.score + 0.09;
-
-    interest.currentScore = base.score;
-    interest.bestScore = best.score;
-    interest.lastEvaluationAt = now;
-    interest.searchPhase = (interest.searchPhase + 0.76 + audio.bend * 0.24) % (Math.PI * 2);
-
-    if (base.score < 0.52) {
-      interest.lowInterestTime = clamp(interest.lowInterestTime + 0.56 * (betterNearby ? 1.15 : 0.72), 0, 4.5);
-    } else {
-      interest.lowInterestTime = Math.max(0, interest.lowInterestTime - 0.7);
-    }
-
-    if (betterNearby) {
-      interest.desiredOffset = {
+    const hasFocusTarget = Math.hypot(interest.focusTargetOffset.x, interest.focusTargetOffset.y) > baseScale * 0.002;
+    const currentTargetOffset = clampVectorMagnitude(interest.focusTargetOffset, correctionLimit);
+    const currentTargetCenter = {
+      x: baseCenter.x + currentTargetOffset.x,
+      y: baseCenter.y + currentTargetOffset.y,
+    };
+    const currentTargetMetrics = hasFocusTarget ? evaluateInterest(currentTargetCenter, baseScale, aspectRatio) : base;
+    const currentTargetPenalty =
+      hasFocusTarget ? (Math.hypot(currentTargetOffset.x, currentTargetOffset.y) / Math.max(correctionLimit, 0.000001)) * 0.05 : 0;
+    const currentTargetScore = hasFocusTarget ? currentTargetMetrics.score - currentTargetPenalty : base.score;
+    const candidateOffset = clampVectorMagnitude(
+      {
         x: best.center.x - baseCenter.x,
         y: best.center.y - baseCenter.y,
-      };
-    } else {
-      interest.desiredOffset = {
-        x: 0,
-        y: 0,
-      };
+      },
+      correctionLimit
+    );
+    const candidatePenalty = (Math.hypot(candidateOffset.x, candidateOffset.y) / Math.max(correctionLimit, 0.000001)) * 0.05;
+    const candidateScore = best.score - candidatePenalty;
+    const focusClearlyBad = currentTargetScore < 0.46 || (base.score < 0.42 && interest.lowInterestTime > 0.8);
+    const dwellExpired = now >= interest.focusTargetHoldUntil;
+    // The focus target is sticky on purpose: we only swap it out when a new local sample is
+    // clearly better or when the current target has been boring for too long.
+    const replacementMargin = focusClearlyBad ? 0.05 : dwellExpired ? 0.14 : 0.24;
+    const shouldReplaceFocus =
+      candidateScore > currentTargetScore + replacementMargin && (!hasFocusTarget || dwellExpired || focusClearlyBad);
+    const shouldReleaseFocus =
+      hasFocusTarget && dwellExpired && currentTargetScore < base.score - 0.08 && candidateScore <= currentTargetScore + 0.03;
+
+    if (shouldReplaceFocus) {
+      interest.focusTargetOffset = candidateOffset;
+      interest.focusTargetScore = candidateScore;
+      interest.focusTargetHoldUntil = now + (focusClearlyBad ? 700 : 1350);
+    } else if (shouldReleaseFocus) {
+      interest.focusTargetOffset = { x: 0, y: 0 };
+      interest.focusTargetScore = base.score;
+      interest.focusTargetHoldUntil = now + 900;
     }
 
-    // When the current view stays low-interest, ease off the zoom-in pressure and allow
-    // a gentle zoom-out toward better structure instead of drilling deeper into empty space.
+    interest.desiredCurrentScore = base.score;
+    interest.desiredBestScore = Math.max(candidateScore, currentTargetScore, base.score);
+    interest.lastEvaluationAt = now;
+    interest.searchPhase = (interest.searchPhase + 0.48 + audio.bend * 0.16) % (Math.PI * 2);
+
+    const lowInterestPressure = clamp((0.56 - base.score) / 0.24, 0, 1);
+    const betterScale = Math.max(1, best.scale / baseScale);
+
+    // Zoom response is continuous now: low-interest regions gradually ease off zoom pressure
+    // instead of flipping between allowed and blocked states on each rescan.
     interest.desiredZoomGovernor =
-      base.score < 0.5
-        ? Math.max(1, betterNearby ? best.scale / baseScale : 1 + (0.5 - base.score) * 0.34)
+      lowInterestPressure > 0
+        ? clamp(lerp(1, Math.max(1 + lowInterestPressure * 0.1, betterScale), 0.82), 1, 1.22)
         : 1;
     interest.desiredZoomPermission =
-      base.score < 0.5
-        ? clamp((base.score - 0.2) / 0.3, 0.18, 0.92)
+      lowInterestPressure > 0
+        ? clamp(1 - lowInterestPressure * 0.7, 0.32, 1)
         : 1;
   }
 
-  const retargetStrength = 1.2 + clamp(interest.lowInterestTime / 1.6, 0, 1) * 2.6;
+  interest.currentScore = damp(interest.currentScore, interest.desiredCurrentScore, 2.1, deltaSeconds);
+  interest.bestScore = damp(interest.bestScore, interest.desiredBestScore, 1.9, deltaSeconds);
 
-  interest.focusOffset.x = damp(interest.focusOffset.x, interest.desiredOffset.x, retargetStrength, deltaSeconds);
-  interest.focusOffset.y = damp(interest.focusOffset.y, interest.desiredOffset.y, retargetStrength, deltaSeconds);
-  interest.zoomGovernor = damp(interest.zoomGovernor, interest.desiredZoomGovernor, retargetStrength, deltaSeconds);
-  interest.zoomPermission = damp(interest.zoomPermission, interest.desiredZoomPermission, retargetStrength, deltaSeconds);
+  const lowInterestPressure = clamp((0.54 - interest.currentScore) / 0.22, 0, 1);
+  if (lowInterestPressure > 0) {
+    interest.lowInterestTime = clamp(interest.lowInterestTime + deltaSeconds * (0.42 + lowInterestPressure * 1.08), 0, 4.5);
+  } else {
+    interest.lowInterestTime = Math.max(0, interest.lowInterestTime - deltaSeconds * 0.95);
+  }
+
+  const correctionResponse = 0.9 + clamp(interest.lowInterestTime / 2.2, 0, 1) * 0.8;
+  const zoomResponse = 1 + lowInterestPressure * 0.8;
+
+  interest.focusOffset.x = damp(interest.focusOffset.x, interest.focusTargetOffset.x, correctionResponse, deltaSeconds);
+  interest.focusOffset.y = damp(interest.focusOffset.y, interest.focusTargetOffset.y, correctionResponse, deltaSeconds);
+  interest.zoomGovernor = damp(interest.zoomGovernor, interest.desiredZoomGovernor, zoomResponse, deltaSeconds);
+  interest.zoomPermission = damp(interest.zoomPermission, interest.desiredZoomPermission, zoomResponse, deltaSeconds);
 }
 
 function updateAudioResponse(deltaSeconds: number) {
@@ -958,7 +1043,7 @@ function updateAudioResponse(deltaSeconds: number) {
 function updateTraversal(deltaSeconds: number, now: number) {
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
   const baseSpeed = 0.92 + audio.ambient * 0.12;
-  const lowInterestDrag = clamp(interest.lowInterestTime * 0.04, 0, 0.16);
+  const lowInterestDrag = clamp(interest.lowInterestTime * 0.03, 0, 0.12);
   const speedTarget = clamp(baseSpeed + audio.zoom * 0.16 * reactivity - lowInterestDrag, 0.76, 1.28);
 
   traversal.pathSpeed = damp(traversal.pathSpeed, speedTarget, 2.6, deltaSeconds);
@@ -1000,22 +1085,50 @@ function updateTraversal(deltaSeconds: number, now: number) {
 
   updateInterestGuidance(pathPoint, baseScale, deltaSeconds, now);
 
-  const driftAmplitude = baseScale * (0.03 + audio.ambient * 0.02 + audio.bend * 0.017);
+  const driftAmplitude = baseScale * (0.022 + audio.ambient * 0.016 + audio.bend * 0.01);
   const driftX = Math.cos(traversal.driftPhase + traversal.segmentSeed * 0.73) * driftAmplitude * 0.78;
   const driftY = Math.sin(traversal.driftPhase * 0.94 - traversal.segmentSeed * 0.41) * driftAmplitude * 0.55;
+  const tangent = cubicBezierTangent(from.center, controlA, controlB, to.center, easedPath);
+  const tangentAhead = cubicBezierTangent(from.center, controlA, controlB, to.center, clamp(easedPath + 0.08, 0, 1));
+  const tangentMagnitude = Math.max(Math.hypot(tangent.x, tangent.y), 0.000001);
+  const tangentUnit = {
+    x: tangent.x / tangentMagnitude,
+    y: tangent.y / tangentMagnitude,
+  };
+  const tangentAngle = Math.atan2(tangentUnit.y, tangentUnit.x);
+  const tangentAheadAngle = Math.atan2(tangentAhead.y, tangentAhead.x);
+  const pathBank = clamp(tangentUnit.y * 0.16 + tangentUnit.x * 0.04, -0.18, 0.18);
+  const curvatureBank = clamp(angleDelta(tangentAheadAngle, tangentAngle) * 2.4, -0.14, 0.14);
   const rotationTarget =
     lerp(from.rotation, to.rotation, easedPath) +
-    Math.sin(traversal.bendPhase * 0.62 + traversal.segmentSeed) * (0.012 + audio.bend * 0.04);
+    pathBank +
+    curvatureBank +
+    Math.sin(traversal.bendPhase * 0.52 + traversal.segmentSeed) * (0.014 + audio.bend * 0.032);
   const audioZoomFactor = 1 - audio.zoom * 0.045 * reactivity * interest.zoomPermission;
+  const correctionInfluence = clamp(0.68 + interest.lowInterestTime * 0.06, 0.68, 0.84);
 
-  traversal.rotation = damp(traversal.rotation, rotationTarget, 2.5, deltaSeconds);
-  traversal.camera = {
+  traversal.desiredCamera = {
     center: {
-      x: pathPoint.x + interest.focusOffset.x + driftX,
-      y: pathPoint.y + interest.focusOffset.y + driftY,
+      x: pathPoint.x + interest.focusOffset.x * correctionInfluence + driftX,
+      y: pathPoint.y + interest.focusOffset.y * correctionInfluence + driftY,
     },
     scale: clamp(baseScale * interest.zoomGovernor * audioZoomFactor, 0.02, 3.2),
-    rotation: traversal.rotation,
+    rotation: rotationTarget,
+  };
+
+  // The desired camera can move more assertively while the rendered camera eases after it.
+  // That extra inertial layer is what makes the flight read as intentional instead of reactive.
+  const centerResponse = 1.7 + audio.zoom * 0.18;
+  const scaleResponse = 1.9 + audio.zoom * 0.22;
+  const rotationResponse = 1.75 + Math.abs(curvatureBank) * 2.8;
+
+  traversal.camera = {
+    center: {
+      x: damp(traversal.camera.center.x, traversal.desiredCamera.center.x, centerResponse, deltaSeconds),
+      y: damp(traversal.camera.center.y, traversal.desiredCamera.center.y, centerResponse, deltaSeconds),
+    },
+    scale: damp(traversal.camera.scale, traversal.desiredCamera.scale, scaleResponse, deltaSeconds),
+    rotation: dampAngle(traversal.camera.rotation, traversal.desiredCamera.rotation, rotationResponse, deltaSeconds),
   };
 }
 

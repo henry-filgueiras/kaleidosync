@@ -1,6 +1,9 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
 import { ref, watch } from "vue";
 
+export const VISUALIZATION_MODES = ["classic", "fractal-traverse"] as const;
+export type VisualizationMode = (typeof VISUALIZATION_MODES)[number];
+
 function createPersistedBoolean(key: string, fallback: boolean) {
   const value = ref(fallback);
 
@@ -36,6 +39,37 @@ function createPersistedNumber(key: string, fallback: number) {
   return value;
 }
 
+function createPersistedString<T extends string>(
+  key: string,
+  fallback: T,
+  allowedValues: readonly T[],
+  legacyResolver?: () => T | null
+) {
+  const value = ref<T>(fallback);
+
+  if (typeof window !== "undefined") {
+    const saved = window.localStorage.getItem(key);
+
+    if (saved && allowedValues.includes(saved as T)) {
+      value.value = saved as T;
+    } else if (legacyResolver) {
+      const legacyValue = legacyResolver();
+
+      if (legacyValue && allowedValues.includes(legacyValue)) {
+        value.value = legacyValue;
+        window.localStorage.setItem(key, legacyValue);
+      }
+    }
+  }
+
+  watch(value, nextValue => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(key, nextValue);
+  });
+
+  return value;
+}
+
 export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const disableFlashing = createPersistedBoolean("kaleidosync.disableFlashing", false);
   const neonMode = createPersistedBoolean("kaleidosync.neonMode", false);
@@ -50,7 +84,15 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const prismVeilStrength = createPersistedNumber("kaleidosync.prismVeilStrength", 0.78);
   const beatHorizon = createPersistedBoolean("kaleidosync.beatHorizon", true);
   const beatHorizonStrength = createPersistedNumber("kaleidosync.beatHorizonStrength", 0.88);
-  const fractalTraverse = createPersistedBoolean("kaleidosync.fractalTraverse", true);
+  const visualizationMode = createPersistedString<VisualizationMode>(
+    "kaleidosync.visualizationMode",
+    "classic",
+    VISUALIZATION_MODES,
+    () => {
+      if (typeof window === "undefined") return null;
+      return window.localStorage.getItem("kaleidosync.fractalTraverse") === "true" ? "fractal-traverse" : null;
+    }
+  );
   const fractalTraverseStrength = createPersistedNumber("kaleidosync.fractalTraverseStrength", 0.84);
 
   return {
@@ -67,7 +109,7 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     prismVeilStrength,
     beatHorizon,
     beatHorizonStrength,
-    fractalTraverse,
+    visualizationMode,
     fractalTraverseStrength,
   };
 });
