@@ -64,6 +64,8 @@ uniform float uCoinDepth;
 uniform float uCoinRadius;
 uniform vec2 uCoinOffset;
 uniform float uCoinShimmer;
+uniform float uPizzaBackdropRotation;
+uniform float uPizzaBackdropTorsion;
 
 const int MAX_ITERATIONS = 768;
 const float PI = 3.14159265359;
@@ -530,22 +532,22 @@ vec3 applyCoinComposition(vec3 color, CoinProjection projection) {
 }
 
 vec2 backdropDiscUvFromFrag(vec2 fragCoord) {
-  vec2 backdropUv = discUvFromFrag(fragCoord) - uCoinOffset * 0.34;
+  vec2 backdropUv = discUvFromFrag(fragCoord) - uCoinOffset * 0.28;
   float radius = length(backdropUv);
-  float lagSpin = uCoinSpin * 0.18 + uCoinPrecession * 0.62 - uCoinFlip * 0.08;
-  backdropUv = rotate2d(backdropUv, lagSpin);
+  backdropUv = rotate2d(backdropUv, uPizzaBackdropRotation);
 
   float torsion =
-    (uCoinTilt.x * backdropUv.y - uCoinTilt.y * backdropUv.x) * (0.12 + min(radius, 2.4) * 0.08) +
-    sin(radius * (2.6 + uPizzaWarp * 0.7) - uCoinSpin * 0.42 + uCoinPrecession * 1.4) * (0.04 + uCoinShimmer * 0.02);
+    uPizzaBackdropTorsion * (0.22 + min(radius, 2.6) * 0.34) +
+    (uCoinTilt.x * backdropUv.y - uCoinTilt.y * backdropUv.x) * (0.06 + min(radius, 2.1) * 0.04) +
+    sin(radius * (2.6 + uPizzaWarp * 0.7) - uPizzaBackdropRotation * 1.2 + uCoinPrecession * 0.9) * (0.028 + uCoinShimmer * 0.016);
   backdropUv = rotate2d(backdropUv, torsion);
   backdropUv *= 0.92 + uCoinDepth * 0.04;
   backdropUv +=
     vec2(
-      sin(uCoinPrecession * 0.84 + uCoinSpin * 0.12),
-      cos(uCoinPrecession * 0.62 - uCoinFlip * 0.28)
+      cos(uPizzaBackdropRotation * 0.74 + uCoinPrecession * 0.36),
+      sin(uPizzaBackdropRotation * 0.58 - uCoinFlip * 0.18)
     ) *
-    (0.03 + uCoinShimmer * 0.012);
+    (0.02 + abs(uPizzaBackdropTorsion) * 0.014 + uCoinShimmer * 0.008);
 
   return backdropUv;
 }
@@ -565,10 +567,18 @@ vec3 applyPizzaBackdropComposition(vec3 color, vec2 discUv) {
   float haloMask = smoothstep(0.68, 1.06, radius) * (1.0 - smoothstep(1.7, 2.18, radius));
   float outerFieldMask = 1.0 - smoothstep(2.25, 2.95, radius);
   float seamVeil = (1.0 - smoothstep(0.05, 0.22, seamDistance)) * smoothstep(0.18, 2.2, radius);
-  float bandPhase = canonicalAngle * 5.2 + radius * (3.0 + uPizzaWarp * 1.5) - uPizzaMorph * 0.22 + slicePhase;
+  float bandPhase =
+    canonicalAngle * 5.2 +
+    radius * (3.0 + uPizzaWarp * 1.5) -
+    uPizzaMorph * 0.22 +
+    slicePhase +
+    uPizzaBackdropRotation * 0.42;
   float mirrorBloom = 0.5 + 0.5 * cos(bandPhase);
   float sliceBloom = pow(clamp(1.0 - abs(wedgeCoord), 0.0, 1.0), 1.35);
-  float radialBands = 0.5 + 0.5 * cos((radius - 0.72) * (4.6 + uPizzaWarp * 1.4) - uPizzaMorph * 0.18 + slicePhase);
+  float radialBands =
+    0.5 +
+    0.5 *
+    cos((radius - 0.72) * (4.6 + uPizzaWarp * 1.4) - uPizzaMorph * 0.18 + slicePhase - uPizzaBackdropTorsion * 0.8);
   float fieldSymmetry = sliceBloom * (0.48 + radialBands * 0.52);
   float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
   vec3 background = vec3(0.006, 0.008, 0.014);
@@ -604,7 +614,9 @@ vec3 shadeCoinBackdropAtFrag(vec2 fragCoord) {
   vec2 paletteUv;
   float paletteOffset;
   FractalSample sample = samplePizzaField(backdropUv, continuationMix, paletteUv, paletteOffset);
-  float motionLag = sin(uCoinPrecession * 0.6 - uCoinSpin * 0.14) * 0.01 + uCoinFlip * 0.003;
+  float motionLag =
+    sin(uPizzaBackdropRotation * 0.62 - uPizzaBackdropTorsion * 0.8 + uCoinPrecession * 0.18) * 0.012 +
+    uPizzaBackdropTorsion * 0.01;
   vec3 baseColor = colorize(sample, paletteUv * 0.86 + backdropUv * 0.08, paletteOffset + motionLag);
   return applyPizzaBackdropComposition(baseColor, backdropUv);
 }
@@ -858,6 +870,16 @@ type TraversalMode = "explore" | "dissolve" | "transit" | "reveal";
 type VoidTransitionStyle = "fade" | "zoom" | "turn";
 type PizzaSymmetryGroup = "cyclic" | "dihedral";
 type CoinMotionPhase = "idle" | "launch" | "flip" | "settle";
+type PizzaFieldMotionState = {
+  rotation: number;
+  angularVelocity: number;
+  targetVelocity: number;
+  backdropLagRotation: number;
+  backdropTorsion: number;
+  backdropTorsionVelocity: number;
+  settle: number;
+  lastKickSignal: number;
+};
 type PizzaSymmetryState = {
   group: PizzaSymmetryGroup;
   order: number;
@@ -1003,6 +1025,8 @@ type FractalUniforms = {
   coinRadius: WebGLUniformLocation | null;
   coinOffset: WebGLUniformLocation | null;
   coinShimmer: WebGLUniformLocation | null;
+  pizzaBackdropRotation: WebGLUniformLocation | null;
+  pizzaBackdropTorsion: WebGLUniformLocation | null;
 };
 
 type CompositeUniforms = {
@@ -1542,6 +1566,19 @@ function createCoinMotionState(): CoinMotionState {
   };
 }
 
+function createPizzaFieldMotionState(): PizzaFieldMotionState {
+  return {
+    rotation: 0,
+    angularVelocity: 0.18,
+    targetVelocity: 0.18,
+    backdropLagRotation: 0,
+    backdropTorsion: 0,
+    backdropTorsionVelocity: 0,
+    settle: 1,
+    lastKickSignal: 0,
+  };
+}
+
 const family = createMandelbrotFamily();
 const renderState: RenderState = {
   canvas: null,
@@ -1572,6 +1609,7 @@ const traversal = createTraversalState(family);
 const interest = createInterestState();
 const fractalMutation = createFractalMutationState();
 const coinMotion = createCoinMotionState();
+const pizzaFieldMotion = createPizzaFieldMotionState();
 const reusableInterestSample: MutableFractalSample = {
   escaped: false,
   smooth: 0,
@@ -1686,6 +1724,10 @@ function resetFractalMutationState() {
 
 function resetCoinMotionState() {
   Object.assign(coinMotion, createCoinMotionState());
+}
+
+function resetPizzaFieldMotionState() {
+  Object.assign(pizzaFieldMotion, createPizzaFieldMotionState());
 }
 
 function resetTraversalState() {
@@ -2206,6 +2248,8 @@ function ensureRenderer() {
     coinRadius: context.getUniformLocation(fractalProgram, "uCoinRadius"),
     coinOffset: context.getUniformLocation(fractalProgram, "uCoinOffset"),
     coinShimmer: context.getUniformLocation(fractalProgram, "uCoinShimmer"),
+    pizzaBackdropRotation: context.getUniformLocation(fractalProgram, "uPizzaBackdropRotation"),
+    pizzaBackdropTorsion: context.getUniformLocation(fractalProgram, "uPizzaBackdropTorsion"),
   };
   renderState.compositeUniforms = {
     currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
@@ -2873,6 +2917,100 @@ function updateCoinMotion(deltaSeconds: number, now: number) {
   coinMotion.settle = damp(coinMotion.settle, settleTarget, 2.2, deltaSeconds);
 }
 
+function updatePizzaFieldMotion(deltaSeconds: number, now: number) {
+  const pulseConfidence = pulse.confidence;
+  const pulseImpact = pulse.impact * pulseConfidence;
+  const pulseAnticipation = pulse.anticipation * pulseConfidence;
+  const reactivity = clamp(0.56 + ((strength.value - 0.35) / 1) * 0.94, 0.56, 1.5);
+  const driftWave = Math.sin(now * 0.00021 + traversal.segmentSeed * TAU * 0.72 + traversal.palettePhase * TAU * 0.18);
+  const driftDirection =
+    Math.abs(coinMotion.spinVelocity) > 0.14 ? (coinMotion.spinVelocity >= 0 ? 1 : -1) : driftWave >= 0 ? 1 : -1;
+  const driftBias = driftWave * 0.06;
+  const kickSignal = clamp(
+    pulseImpact * 0.74 + audio.bassDrive * 0.36 + audio.surge * 0.22 + audio.noveltySmoothed * 0.16,
+    0,
+    1.6
+  );
+  const kickRise = Math.max(0, kickSignal - pizzaFieldMotion.lastKickSignal);
+  const coinCoupling =
+    coinMotion.spinVelocity * (0.18 + audio.bassDrive * 0.04) +
+    coinMotion.flipVelocity * 0.03 +
+    Math.sin(coinMotion.precession) * (0.04 + audio.midDrive * 0.02);
+  const driftVelocity = driftDirection * (0.12 + audio.ambient * 0.14 + audio.energy * 0.04) + driftBias;
+
+  pizzaFieldMotion.lastKickSignal = kickSignal;
+
+  pizzaFieldMotion.targetVelocity = damp(
+    pizzaFieldMotion.targetVelocity,
+    clamp(
+      driftVelocity +
+        coinCoupling +
+        pulseAnticipation * driftDirection * 0.08 +
+        (audio.spectralFlux * 0.06 + audio.midDrive * 0.04) * reactivity,
+      -1.15,
+      1.15
+    ),
+    1.65,
+    deltaSeconds
+  );
+
+  if (kickRise > 0.055) {
+    // Bass/pulse add a deliberate rotational shove so the field feels driven, not just drifting.
+    pizzaFieldMotion.angularVelocity +=
+      driftDirection * (0.14 + pulseImpact * 0.38 + audio.bassDrive * 0.22 + audio.surge * 0.12) * reactivity;
+  }
+
+  // The field has its own momentum, then eases toward a quieter drift target between impacts.
+  pizzaFieldMotion.angularVelocity = damp(
+    pizzaFieldMotion.angularVelocity,
+    pizzaFieldMotion.targetVelocity,
+    1.8 + audio.ambient * 0.4 + audio.energy * 0.35,
+    deltaSeconds
+  );
+  pizzaFieldMotion.rotation = wrapAngle(pizzaFieldMotion.rotation + pizzaFieldMotion.angularVelocity * deltaSeconds);
+
+  const lagTarget =
+    pizzaFieldMotion.rotation -
+    pizzaFieldMotion.angularVelocity *
+      (0.2 + audio.midDrive * 0.16 + audio.spectralFlux * 0.08 + Math.abs(coinMotion.flipVelocity) * 0.02);
+  const rotationGap = angleDelta(pizzaFieldMotion.rotation, pizzaFieldMotion.backdropLagRotation);
+  const torsionTarget = clamp(
+    rotationGap * (0.72 + audio.midDrive * 0.5 + audio.spectralFlux * 0.28) +
+      (coinMotion.spinVelocity - pizzaFieldMotion.angularVelocity) * 0.12 +
+      coinMotion.flipVelocity * 0.035,
+    -0.85,
+    0.85
+  );
+
+  // Backdrop lag is intentionally slower than the field so the background feels dragged through a viscous medium.
+  pizzaFieldMotion.backdropLagRotation = dampAngle(
+    pizzaFieldMotion.backdropLagRotation,
+    lagTarget,
+    1.05 + audio.ambient * 0.3 + audio.midDrive * 0.22,
+    deltaSeconds
+  );
+  pizzaFieldMotion.backdropTorsionVelocity = damp(
+    pizzaFieldMotion.backdropTorsionVelocity,
+    torsionTarget,
+    1.7 + audio.midDrive * 0.45 + audio.spectralFlux * 0.3,
+    deltaSeconds
+  );
+  pizzaFieldMotion.backdropTorsion = damp(
+    pizzaFieldMotion.backdropTorsion,
+    pizzaFieldMotion.backdropTorsionVelocity,
+    2.15,
+    deltaSeconds
+  );
+
+  const settleTarget =
+    coinMotion.phase === "idle"
+      ? 1
+      : coinMotion.phase === "settle"
+        ? 0.64
+        : 0.2 + audio.spectralFlux * 0.08 + Math.min(Math.abs(pizzaFieldMotion.backdropTorsion), 0.14);
+  pizzaFieldMotion.settle = damp(pizzaFieldMotion.settle, settleTarget, 2, deltaSeconds);
+}
+
 function updateTraversal(deltaSeconds: number, now: number) {
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
   const aspectRatio = getViewportAspectRatio();
@@ -3108,7 +3246,11 @@ function renderFractal(deltaSeconds: number) {
   const pizzaWarp = isPizzaLayout.value
     ? clamp(0.14 + audio.bend * 0.1 + audio.highDrive * 0.06 + audio.spectralFlux * 0.05 + pizzaSymmetry.strength * 0.04 + pulseAnticipation * 0.05, 0.14, 0.42)
     : 0;
-  const pizzaSpin = traversal.camera.rotation * 0.8 + traversal.palettePhase * TAU * 0.18 + (audio.temperature - 0.5) * 0.9;
+  const pizzaSpin =
+    pizzaFieldMotion.rotation +
+    traversal.camera.rotation * 0.18 +
+    traversal.palettePhase * TAU * 0.08 +
+    (audio.temperature - 0.5) * 0.24;
   const pizzaMorph =
     traversal.bendPhase * 0.42 +
     traversal.driftPhase * 0.28 +
@@ -3117,6 +3259,8 @@ function renderFractal(deltaSeconds: number) {
     audio.spectralFlux * 0.7 +
     pulseImpact * 0.28 +
     pulseAnticipation * 0.12;
+  const pizzaBackdropRotation = angleDelta(pizzaFieldMotion.backdropLagRotation, pizzaFieldMotion.rotation);
+  const pizzaBackdropTorsion = pizzaFieldMotion.backdropTorsion;
   const coinRadius = clamp(0.78 + coinMotion.lift * 0.08 + audio.zoom * 0.02 + pulseImpact * 0.02, 0.74, 0.94);
   const coinDepth = clamp(0.98 - coinMotion.lift * 0.34 - pulseImpact * 0.06, 0.72, 1.16);
   const coinOffset = {
@@ -3178,6 +3322,8 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.coinRadius, coinRadius);
   gl.uniform2f(fractalUniforms.coinOffset, coinOffset.x, coinOffset.y);
   gl.uniform1f(fractalUniforms.coinShimmer, coinShimmer);
+  gl.uniform1f(fractalUniforms.pizzaBackdropRotation, pizzaBackdropRotation);
+  gl.uniform1f(fractalUniforms.pizzaBackdropTorsion, pizzaBackdropTorsion);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
@@ -3252,6 +3398,7 @@ function animate(now: number) {
 
   updateAudioResponse(deltaSeconds);
   updateCoinMotion(deltaSeconds, now);
+  updatePizzaFieldMotion(deltaSeconds, now);
   updateFractalMutation(deltaSeconds);
   updateTraversal(deltaSeconds, now);
 
@@ -3269,6 +3416,7 @@ watch(
       resetInterestState();
       resetFractalMutationState();
       resetCoinMotionState();
+      resetPizzaFieldMotionState();
       lastFrameTime = 0;
       return;
     }
@@ -3278,6 +3426,7 @@ watch(
     resetAudioState();
     resetFractalMutationState();
     resetCoinMotionState();
+    resetPizzaFieldMotionState();
     lastFrameTime = 0;
     lastRenderTime = 0;
   },
@@ -3317,6 +3466,7 @@ watch(
     resetInterestState();
     resetFractalMutationState();
     resetCoinMotionState();
+    resetPizzaFieldMotionState();
     resetTemporalState();
     lastFrameTime = 0;
   }
@@ -3327,6 +3477,7 @@ watch(
   () => {
     resetTemporalState();
     resetCoinMotionState();
+    resetPizzaFieldMotionState();
     interest.lowInterestTime = 0;
     interest.focusTargetHoldUntil = 0;
     traversal.voidMix = 0;
