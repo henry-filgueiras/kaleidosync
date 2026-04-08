@@ -21,7 +21,7 @@
     <PulseOverlay />
     <BeatHorizon />
     <PrismVeil />
-    <AudioDebugMeter />
+    <AudioDebugMeter v-if="showAudioDebugMeter" />
   </View>
 </template>
 
@@ -147,6 +147,15 @@ const cycleTiming = computed(() => {
       )
     ),
   };
+});
+
+const showAudioDebugMeter = computed(() => {
+  const isPizzaPresentation =
+    settings.visualizationMode === "fractal-traverse" &&
+    (settings.fractalTraverseLayoutMode === "pizza-kaleido" || settings.fractalTraverseLayoutMode === "pizza-coin");
+
+  if (!isPizzaPresentation) return true;
+  return showSources.value || (showMenu.value && !forceHide.value);
 });
 
 onMounted(async () => {
