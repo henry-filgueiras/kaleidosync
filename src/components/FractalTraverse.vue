@@ -12,9 +12,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { AudioSource } from "@wearesage/shared";
-import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { useViewport } from "@wearesage/vue";
-import { RAW_AUDIO_NOISE_FLOOR_DB, rawLevelToDecibels, sampleRawAnalyserLevel } from "../audio-level";
+import { useAudioFeatures } from "../stores/audio-features";
 import { useSources } from "../stores/sources";
 import { useVisualizerSettings } from "../stores/visualizer-settings";
 
@@ -324,20 +323,18 @@ type FractalFamily = {
 };
 
 type AudioResponseState = {
-  analyserBuffer: Uint8Array | null;
-  fastEnergy: number;
-  slowEnergy: number;
-  previousFeature: number;
-  noveltyHistory: number[];
-  novelty: number;
+  bassDrive: number;
+  midDrive: number;
+  highDrive: number;
+  spectralFlux: number;
   noveltySmoothed: number;
+  energy: number;
+  temperature: number;
   surge: number;
   ambient: number;
   zoom: number;
   bend: number;
   palette: number;
-  stream: number;
-  loudness: number;
 };
 
 type TraversalState = {
@@ -481,6 +478,7 @@ const canvas = ref<HTMLCanvasElement | null>(null);
 const viewport = useViewport();
 const sources = useSources();
 const settings = useVisualizerSettings();
+const audioFeatures = useAudioFeatures();
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -813,20 +811,18 @@ function createMandelbrotFamily(): FractalFamily {
 
 function createAudioState(): AudioResponseState {
   return {
-    analyserBuffer: null,
-    fastEnergy: 0,
-    slowEnergy: 0,
-    previousFeature: 0,
-    noveltyHistory: [],
-    novelty: 0,
+    bassDrive: 0,
+    midDrive: 0,
+    highDrive: 0,
+    spectralFlux: 0,
     noveltySmoothed: 0,
+    energy: 0,
+    temperature: 0.5,
     surge: 0,
     ambient: 0.16,
     zoom: 0.12,
     bend: 0.2,
     palette: 0.18,
-    stream: 0,
-    loudness: 0,
   };
 }
 
@@ -954,20 +950,18 @@ function resetTemporalState() {
 }
 
 function resetAudioState() {
-  audio.analyserBuffer = null;
-  audio.fastEnergy = 0;
-  audio.slowEnergy = 0;
-  audio.previousFeature = 0;
-  audio.noveltyHistory = [];
-  audio.novelty = 0;
+  audio.bassDrive = 0;
+  audio.midDrive = 0;
+  audio.highDrive = 0;
+  audio.spectralFlux = 0;
   audio.noveltySmoothed = 0;
+  audio.energy = 0;
+  audio.temperature = 0.5;
   audio.surge = 0;
   audio.ambient = 0.16;
   audio.zoom = 0.12;
   audio.bend = 0.2;
   audio.palette = 0.18;
-  audio.stream = 0;
-  audio.loudness = 0;
 }
 
 function resetInterestState() {
@@ -1442,7 +1436,7 @@ function pickNextPoiIndex(currentIndex: number, previousIndex: number, aspectRat
       ? currentPoi.outbound
       : family.pointsOfInterest.filter((_, index) => index !== currentIndex).map((poi) => poi.id);
   const outboundIndices = outboundIds.map((id) => family.getPoiIndexById(id));
-  const audioAdventure = clamp(audio.noveltySmoothed * 0.78 + audio.surge * 1.35, 0, 1);
+  const audioAdventure = clamp(audio.noveltySmoothed * 0.38 + audio.spectralFlux * 0.82 + audio.surge * 0.22, 0, 1);
   let bestIndex = outboundIndices[0] ?? currentIndex;
   let bestScore = Number.NEGATIVE_INFINITY;
 
@@ -1536,7 +1530,11 @@ function scanNearbyInterest(
 }
 
 function pickNextFractalVariant(previousIndex: number) {
-  const targetIntensity = clamp(0.22 + audio.noveltySmoothed * 0.74 + audio.surge * 0.64, 0.22, 0.94);
+  const targetIntensity = clamp(
+    0.22 + audio.noveltySmoothed * 0.36 + audio.spectralFlux * 0.48 + audio.bassDrive * 0.18 + audio.highDrive * 0.12,
+    0.22,
+    0.94
+  );
   let bestIndex = 1;
   let bestScore = Number.NEGATIVE_INFINITY;
 
@@ -1560,7 +1558,7 @@ function pickNextFractalVariant(previousIndex: number) {
 }
 
 function updateFractalMutation(deltaSeconds: number) {
-  const mutationExcitement = clamp(audio.noveltySmoothed * 0.92 + audio.surge * 1.2, 0, 1);
+  const mutationExcitement = clamp(audio.noveltySmoothed * 0.34 + audio.spectralFlux * 0.82 + audio.highDrive * 0.16, 0, 1);
   const ambientDepth = 0.18 + audio.ambient * 0.08;
 
   // Mutation stays alive during quiet sections, then leans deeper and faster on stronger novelty.
@@ -1650,7 +1648,7 @@ function updateInterestGuidance(
     interest.desiredCurrentScore = base.score;
     interest.desiredBestScore = Math.max(candidateScore, currentTargetScore, base.score);
     interest.lastEvaluationAt = now;
-    interest.searchPhase = (interest.searchPhase + 0.36 + audio.bend * 0.08) % (Math.PI * 2);
+    interest.searchPhase = (interest.searchPhase + 0.34 + audio.bend * 0.06 + audio.spectralFlux * 0.08) % (Math.PI * 2);
 
     const lowInterestPressure = clamp((0.58 - base.score) / 0.26, 0, 1);
     const betterScale = Math.max(1, best.scale / baseScale);
@@ -1687,66 +1685,39 @@ function updateInterestGuidance(
 }
 
 function updateAudioResponse(deltaSeconds: number) {
-  const volume = clamp(Number(sources.volume) || 0, 0, 1);
   const stream = clamp(Number(sources.stream) || 0, 0, 1);
-  const analyserResult = sampleRawAnalyserLevel(audioSystem.getAnalyserNode(), audio.analyserBuffer);
-  const rawDb = rawLevelToDecibels(analyserResult.level, RAW_AUDIO_NOISE_FLOOR_DB);
-  const rawEnergy = clamp((rawDb - RAW_AUDIO_NOISE_FLOOR_DB) / 42, 0, 1);
-  const feature = Math.max(volume * 0.72 + rawEnergy * 0.28, rawEnergy * 0.82);
-
-  audio.analyserBuffer = analyserResult.buffer;
-  audio.stream = stream;
-  audio.loudness = volume;
-
-  const fastAlpha = 1 - Math.exp(-deltaSeconds * 8);
-  const slowAlpha = 1 - Math.exp(-deltaSeconds * 1.6);
-
-  audio.fastEnergy += (feature - audio.fastEnergy) * fastAlpha;
-  audio.slowEnergy += (feature - audio.slowEnergy) * slowAlpha;
-
-  // Fast-vs-slow energy keeps the motion alive in quiet passages while making relative
-  // changes matter more than sustained loudness.
-  const novelty = Math.max(0, audio.fastEnergy - audio.slowEnergy);
-  audio.noveltyHistory.push(novelty);
-  if (audio.noveltyHistory.length > 48) {
-    audio.noveltyHistory.splice(0, audio.noveltyHistory.length - 48);
-  }
-
-  const noveltyMean =
-    audio.noveltyHistory.length > 0
-      ? audio.noveltyHistory.reduce((sum, value) => sum + value, 0) / audio.noveltyHistory.length
-      : novelty;
-  const noveltyDeviation =
-    audio.noveltyHistory.length > 1
-      ? Math.sqrt(
-          audio.noveltyHistory.reduce((sum, value) => sum + Math.pow(value - noveltyMean, 2), 0) / audio.noveltyHistory.length
-        )
-      : noveltyMean;
-  const noveltyZScore = Math.max(0, (novelty - noveltyMean) / Math.max(noveltyDeviation, 0.014));
-  const noveltyResponse = 1 - Math.exp(-2.4 * noveltyZScore);
-  const surge = Math.max(0, feature - audio.previousFeature);
+  const spectral = audioFeatures.update(deltaSeconds);
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
+  const bassDriveTarget = clamp(spectral.bass * 0.78 + spectral.lowMid * 0.22, 0, 1);
+  const midDriveTarget = clamp(spectral.mid * 0.74 + spectral.lowMid * 0.26, 0, 1);
+  const highDriveTarget = clamp(spectral.high * 0.7 + spectral.air * 0.3, 0, 1);
+  const fluxExcitement = clamp(spectral.spectralFlux * 0.84 + spectral.novelty * 0.22, 0, 1);
+  const temperatureTarget = clamp(spectral.centroid + spectral.bandImbalance * 0.12, 0, 1);
 
-  audio.previousFeature = feature;
-  audio.novelty = noveltyResponse;
-  audio.noveltySmoothed = damp(audio.noveltySmoothed, noveltyResponse, 4.6, deltaSeconds);
-  audio.surge = damp(audio.surge, surge, 7.4, deltaSeconds);
-  audio.ambient = damp(audio.ambient, clamp(0.16 + audio.slowEnergy * 0.52 + stream * 0.22, 0.16, 1), 2.1, deltaSeconds);
+  audio.bassDrive = damp(audio.bassDrive, bassDriveTarget, 4.8, deltaSeconds);
+  audio.midDrive = damp(audio.midDrive, midDriveTarget, 4.8, deltaSeconds);
+  audio.highDrive = damp(audio.highDrive, highDriveTarget, 5.2, deltaSeconds);
+  audio.spectralFlux = damp(audio.spectralFlux, spectral.spectralFlux, 5.8, deltaSeconds);
+  audio.energy = damp(audio.energy, spectral.energy, 4.2, deltaSeconds);
+  audio.noveltySmoothed = damp(audio.noveltySmoothed, spectral.novelty, 4.6, deltaSeconds);
+  audio.temperature = damp(audio.temperature, temperatureTarget, 2.4, deltaSeconds);
+  audio.surge = damp(audio.surge, fluxExcitement, 7.1, deltaSeconds);
+  audio.ambient = damp(audio.ambient, clamp(0.16 + audio.energy * 0.56 + stream * 0.18, 0.16, 1), 2.1, deltaSeconds);
   audio.zoom = damp(
     audio.zoom,
-    clamp(0.14 + audio.ambient * 0.16 + (audio.noveltySmoothed * 0.82 + audio.surge * 2.6) * reactivity, 0.12, 1.45),
-    3.6,
+    clamp(0.13 + audio.ambient * 0.14 + audio.bassDrive * 0.24 + (audio.noveltySmoothed * 0.22 + audio.spectralFlux * 0.6) * reactivity, 0.12, 1.45),
+    3.5,
     deltaSeconds
   );
   audio.bend = damp(
     audio.bend,
-    clamp(0.18 + stream * 0.32 + (audio.noveltySmoothed * 0.72 + audio.surge * 1.9) * reactivity, 0.16, 1.3),
+    clamp(0.18 + stream * 0.18 + audio.midDrive * 0.4 + (audio.noveltySmoothed * 0.14 + audio.spectralFlux * 0.22) * reactivity, 0.16, 1.3),
     3.1,
     deltaSeconds
   );
   audio.palette = damp(
     audio.palette,
-    clamp(0.2 + stream * 0.44 + audio.noveltySmoothed * 0.6 * reactivity, 0.18, 1.25),
+    clamp(0.2 + stream * 0.18 + audio.highDrive * 0.48 + audio.temperature * 0.14 + audio.spectralFlux * 0.14 * reactivity, 0.18, 1.25),
     2.3,
     deltaSeconds
   );
@@ -1757,15 +1728,15 @@ function updateTraversal(deltaSeconds: number, now: number) {
   const aspectRatio = getViewportAspectRatio();
   const escapeTarget = clamp((interest.lowInterestTime - 0.55) / 1.35, 0, 1);
   const calmCruise = 0.82 + audio.ambient * 0.08;
-  const audioTravelBias = (audio.noveltySmoothed * 0.08 + audio.surge * 0.14) * reactivity;
+  const audioTravelBias = (audio.noveltySmoothed * 0.04 + audio.spectralFlux * 0.12 + audio.surge * 0.05) * reactivity;
 
   traversal.segmentEscape = damp(traversal.segmentEscape, escapeTarget, 2.1, deltaSeconds);
   const speedTarget = clamp(calmCruise + audioTravelBias + traversal.segmentEscape * 0.22, 0.76, 1.16);
   traversal.pathSpeed = damp(traversal.pathSpeed, speedTarget, 2.1, deltaSeconds);
   traversal.progress += (deltaSeconds / traversal.segmentDuration) * traversal.pathSpeed * (1 + traversal.segmentEscape * 0.26);
-  traversal.bendPhase += deltaSeconds * (0.28 + audio.bend * 0.26);
+  traversal.bendPhase += deltaSeconds * (0.28 + audio.bend * 0.24 + audio.midDrive * 0.06);
   traversal.driftPhase += deltaSeconds * (0.16 + audio.ambient * 0.22);
-  traversal.palettePhase = (traversal.palettePhase + deltaSeconds * (0.016 + audio.palette * 0.028)) % 1;
+  traversal.palettePhase = (traversal.palettePhase + deltaSeconds * (0.016 + audio.palette * 0.024 + audio.highDrive * 0.012)) % 1;
 
   while (traversal.progress >= 1) {
     advanceSegment(aspectRatio);
@@ -1834,7 +1805,8 @@ function updateTraversal(deltaSeconds: number, now: number) {
     headingBias +
     curvatureBank +
     correctionBank +
-    Math.sin(traversal.bendPhase * 0.42 + traversal.segmentSeed) * (0.008 + audio.bend * 0.014);
+    Math.sin(traversal.bendPhase * 0.42 + traversal.segmentSeed) * (0.008 + audio.bend * 0.014) +
+    (audio.temperature - 0.5) * 0.024 * reactivity;
   const audioZoomFactor = 1 - audio.zoom * 0.03 * reactivity * interest.zoomPermission;
   const railPull = lerp(from.railPull, to.railPull, easedPath);
   const correctionInfluence = clamp((1 - railPull) * 2.2 + traversal.segmentEscape * 0.08, 0.42, 0.72);
@@ -1960,9 +1932,11 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.scale, traversal.camera.scale);
   gl.uniform1f(fractalUniforms.rotation, traversal.camera.rotation);
   gl.uniform1f(fractalUniforms.aspect, currentAspectRatio);
-  gl.uniform1f(fractalUniforms.palettePhase, (traversal.palettePhase + family.pointsOfInterest[traversal.currentIndex].hueOffset) % 1);
+  const palettePhase =
+    traversal.palettePhase + family.pointsOfInterest[traversal.currentIndex].hueOffset + (audio.temperature - 0.5) * 0.08;
+  gl.uniform1f(fractalUniforms.palettePhase, ((palettePhase % 1) + 1) % 1);
   gl.uniform1f(fractalUniforms.ambientLift, 0.07 + audio.ambient * 0.08);
-  gl.uniform1f(fractalUniforms.paletteEnergy, 0.14 + audio.palette * 0.14);
+  gl.uniform1f(fractalUniforms.paletteEnergy, 0.14 + audio.palette * 0.12 + audio.highDrive * 0.06);
   gl.uniform1f(fractalUniforms.stableAA, stableAA);
   gl.uniform1i(fractalUniforms.maxIterations, maxIterations);
   gl.uniform1f(fractalUniforms.structurePower, fractalMutation.parameters.power);
