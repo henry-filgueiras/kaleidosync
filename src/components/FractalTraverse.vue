@@ -20,13 +20,15 @@ import { useVisualizerSettings } from "../stores/visualizer-settings";
 
 const VERTEX_SHADER_SOURCE = `
 attribute vec2 aPosition;
+varying vec2 vUv;
 
 void main() {
+  vUv = aPosition * 0.5 + 0.5;
   gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
 
-const FRAGMENT_SHADER_SOURCE = `
+const FRACTAL_FRAGMENT_SHADER_SOURCE = `
 precision highp float;
 precision highp int;
 
@@ -41,7 +43,7 @@ uniform float uPaletteEnergy;
 uniform float uStableAA;
 uniform int uMaxIterations;
 
-const int MAX_ITERATIONS = 720;
+const int MAX_ITERATIONS = 768;
 const float TAU = 6.28318530718;
 
 struct FractalSample {
@@ -99,9 +101,9 @@ vec3 colorize(FractalSample sample, vec2 uv) {
   return pow(color, vec3(0.94));
 }
 
-vec3 samplePixel(vec2 fragCoord) {
+FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv) {
   vec2 centered = fragCoord / uResolution - 0.5;
-  vec2 paletteUv = vec2(centered.x, centered.y);
+  paletteUv = vec2(centered.x, centered.y);
   centered.x *= uAspect;
 
   float cosRotation = cos(uRotation);
@@ -111,28 +113,144 @@ vec3 samplePixel(vec2 fragCoord) {
     centered.x * sinRotation + centered.y * cosRotation
   ) * uScale;
 
-  FractalSample sample = sampleMandelbrot(uCenter + rotated);
+  return sampleMandelbrot(uCenter + rotated);
+}
+
+vec3 shadeAtFrag(vec2 fragCoord) {
+  vec2 paletteUv;
+  FractalSample sample = sampleAtFrag(fragCoord, paletteUv);
   return colorize(sample, paletteUv);
+}
+
+float normalizedSmooth(FractalSample sample) {
+  return clamp(sample.smoothValue / float(uMaxIterations), 0.0, 1.0);
+}
+
+float sampleBoundaryMetric(vec2 fragCoord, FractalSample centerSample) {
+  vec2 ignoredUv;
+  FractalSample probeX = sampleAtFrag(fragCoord + vec2(0.9, 0.0), ignoredUv);
+  FractalSample probeY = sampleAtFrag(fragCoord + vec2(0.0, 0.9), ignoredUv);
+  float centerSmooth = normalizedSmooth(centerSample);
+  float smoothGradient = abs(centerSmooth - normalizedSmooth(probeX)) + abs(centerSmooth - normalizedSmooth(probeY));
+  float escapeGradient = abs(centerSample.escaped - probeX.escaped) + abs(centerSample.escaped - probeY.escaped);
+  float centerTrap = log(1.0 + centerSample.trap);
+  float trapGradient = abs(centerTrap - log(1.0 + probeX.trap)) + abs(centerTrap - log(1.0 + probeY.trap));
+
+  return clamp(smoothGradient * 1.7 + escapeGradient * 0.45 + trapGradient * 0.9, 0.0, 1.0);
 }
 
 void main() {
   vec2 frag = gl_FragCoord.xy;
-  vec3 color = 0.5 * (
-    samplePixel(frag + vec2(-0.25, 0.25)) +
-    samplePixel(frag + vec2(0.25, -0.25))
-  );
+  vec2 paletteUv;
+  FractalSample centerSample = sampleAtFrag(frag, paletteUv);
+  vec3 color = colorize(centerSample, paletteUv);
 
   if (uStableAA > 0.01) {
-    vec3 refined = 0.25 * (
-      samplePixel(frag + vec2(-0.38, -0.12)) +
-      samplePixel(frag + vec2(0.12, 0.38)) +
-      samplePixel(frag + vec2(0.38, -0.28)) +
-      samplePixel(frag + vec2(-0.12, 0.28))
+    vec3 paired = 0.5 * (
+      shadeAtFrag(frag + vec2(-0.28, 0.28)) +
+      shadeAtFrag(frag + vec2(0.28, -0.28))
     );
-    color = mix(color, refined, uStableAA);
+    color = mix(color, paired, 0.24 + uStableAA * 0.26);
+
+    float edgeMetric = sampleBoundaryMetric(frag, centerSample);
+    float boundaryWeight = clamp(edgeMetric * uStableAA * 1.1, 0.0, 1.0);
+
+    if (boundaryWeight > 0.06) {
+      vec3 refined = 0.25 * (
+        shadeAtFrag(frag + vec2(-0.38, -0.12)) +
+        shadeAtFrag(frag + vec2(0.12, 0.38)) +
+        shadeAtFrag(frag + vec2(0.38, -0.28)) +
+        shadeAtFrag(frag + vec2(-0.12, 0.28))
+      );
+      color = mix(color, refined, clamp(boundaryWeight * (0.52 + uStableAA * 0.28), 0.0, 0.88));
+    }
   }
 
   gl_FragColor = vec4(color, 1.0);
+}
+`;
+
+const COMPOSITE_FRAGMENT_SHADER_SOURCE = `
+precision highp float;
+
+varying vec2 vUv;
+
+uniform sampler2D uCurrentTexture;
+uniform sampler2D uHistoryTexture;
+uniform vec2 uCurrentTexelSize;
+uniform vec2 uCurrentCenter;
+uniform float uCurrentScale;
+uniform float uCurrentRotation;
+uniform float uCurrentAspect;
+uniform vec2 uPreviousCenter;
+uniform float uPreviousScale;
+uniform float uPreviousRotation;
+uniform float uPreviousAspect;
+uniform float uHistoryBlend;
+
+vec2 viewToComplex(vec2 uv, vec2 center, float scale, float rotation, float aspect) {
+  vec2 centered = uv - 0.5;
+  centered.x *= aspect;
+  float cosRotation = cos(rotation);
+  float sinRotation = sin(rotation);
+  vec2 rotated = vec2(
+    centered.x * cosRotation - centered.y * sinRotation,
+    centered.x * sinRotation + centered.y * cosRotation
+  ) * scale;
+  return center + rotated;
+}
+
+vec2 complexToUv(vec2 point, vec2 center, float scale, float rotation, float aspect) {
+  vec2 delta = (point - center) / max(scale, 0.000001);
+  float cosRotation = cos(rotation);
+  float sinRotation = sin(rotation);
+  vec2 unrotated = vec2(
+    delta.x * cosRotation + delta.y * sinRotation,
+    -delta.x * sinRotation + delta.y * cosRotation
+  );
+  unrotated.x /= max(aspect, 0.000001);
+  return unrotated + 0.5;
+}
+
+void main() {
+  vec3 current = texture2D(uCurrentTexture, vUv).rgb;
+  vec2 worldPoint = viewToComplex(vUv, uCurrentCenter, uCurrentScale, uCurrentRotation, uCurrentAspect);
+  vec2 previousUv = complexToUv(worldPoint, uPreviousCenter, uPreviousScale, uPreviousRotation, uPreviousAspect);
+  vec2 clampedUv = clamp(previousUv, 0.0, 1.0);
+  float valid =
+    step(0.0, previousUv.x) *
+    step(0.0, previousUv.y) *
+    step(previousUv.x, 1.0) *
+    step(previousUv.y, 1.0);
+  vec3 history = texture2D(uHistoryTexture, clampedUv).rgb;
+
+  // Clamp reprojected history into the local current neighborhood to cut ghost trails.
+  vec2 texel = uCurrentTexelSize * 1.25;
+  vec3 sampleXPos = texture2D(uCurrentTexture, clamp(vUv + vec2(texel.x, 0.0), 0.0, 1.0)).rgb;
+  vec3 sampleXNeg = texture2D(uCurrentTexture, clamp(vUv - vec2(texel.x, 0.0), 0.0, 1.0)).rgb;
+  vec3 sampleYPos = texture2D(uCurrentTexture, clamp(vUv + vec2(0.0, texel.y), 0.0, 1.0)).rgb;
+  vec3 sampleYNeg = texture2D(uCurrentTexture, clamp(vUv - vec2(0.0, texel.y), 0.0, 1.0)).rgb;
+  vec3 neighborhoodMin = min(current, min(min(sampleXPos, sampleXNeg), min(sampleYPos, sampleYNeg)));
+  vec3 neighborhoodMax = max(current, max(max(sampleXPos, sampleXNeg), max(sampleYPos, sampleYNeg)));
+  vec3 clampedHistory = clamp(history, neighborhoodMin - 0.045, neighborhoodMax + 0.045);
+
+  float historyDelta = length(clampedHistory - current);
+  float colorConfidence = 1.0 - smoothstep(0.05, 0.3, historyDelta);
+  float blend = uHistoryBlend * valid * colorConfidence;
+
+  gl_FragColor = vec4(mix(current, clampedHistory, blend), 1.0);
+}
+`;
+
+const PRESENT_FRAGMENT_SHADER_SOURCE = `
+precision highp float;
+
+varying vec2 vUv;
+
+uniform sampler2D uSourceTexture;
+
+void main() {
+  gl_FragColor = texture2D(uSourceTexture, vUv);
 }
 `;
 
@@ -228,7 +346,7 @@ type InterestState = {
   lastEvaluationAt: number;
 };
 
-type GLUniforms = {
+type FractalUniforms = {
   resolution: WebGLUniformLocation | null;
   center: WebGLUniformLocation | null;
   scale: WebGLUniformLocation | null;
@@ -241,17 +359,53 @@ type GLUniforms = {
   maxIterations: WebGLUniformLocation | null;
 };
 
+type CompositeUniforms = {
+  currentTexture: WebGLUniformLocation | null;
+  historyTexture: WebGLUniformLocation | null;
+  currentTexelSize: WebGLUniformLocation | null;
+  currentCenter: WebGLUniformLocation | null;
+  currentScale: WebGLUniformLocation | null;
+  currentRotation: WebGLUniformLocation | null;
+  currentAspect: WebGLUniformLocation | null;
+  previousCenter: WebGLUniformLocation | null;
+  previousScale: WebGLUniformLocation | null;
+  previousRotation: WebGLUniformLocation | null;
+  previousAspect: WebGLUniformLocation | null;
+  historyBlend: WebGLUniformLocation | null;
+};
+
+type PresentUniforms = {
+  sourceTexture: WebGLUniformLocation | null;
+};
+
+type RenderTarget = {
+  framebuffer: WebGLFramebuffer | null;
+  texture: WebGLTexture | null;
+  width: number;
+  height: number;
+};
+
 type RenderState = {
   canvas: HTMLCanvasElement | null;
   gl: WebGLRenderingContext | null;
-  program: WebGLProgram | null;
+  fractalProgram: WebGLProgram | null;
+  compositeProgram: WebGLProgram | null;
+  presentProgram: WebGLProgram | null;
   buffer: WebGLBuffer | null;
-  uniforms: GLUniforms | null;
+  fractalUniforms: FractalUniforms | null;
+  compositeUniforms: CompositeUniforms | null;
+  presentUniforms: PresentUniforms | null;
+  currentTarget: RenderTarget;
+  historyTargets: [RenderTarget, RenderTarget];
+  historyReadIndex: number;
+  historyValid: boolean;
   displayWidth: number;
   displayHeight: number;
   dpr: number;
   lastCamera: FractalViewport | null;
+  historyCamera: FractalViewport | null;
   motion: number;
+  refinement: number;
 };
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -352,6 +506,15 @@ function copyViewport(camera: FractalViewport): FractalViewport {
   };
 }
 
+function createRenderTargetState(): RenderTarget {
+  return {
+    framebuffer: null,
+    texture: null,
+    width: 0,
+    height: 0,
+  };
+}
+
 function createMandelbrotFamily(): FractalFamily {
   // These guide points keep the macro-travel curated while the local interest scan
   // pulls the camera onto nearby boundary-rich structure.
@@ -381,7 +544,7 @@ function createMandelbrotFamily(): FractalFamily {
     },
     getMaxIterations(scale: number, qualityBias = 0) {
       const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(scale, 0.000001)));
-      return clamp(Math.round(170 + zoomDepth * 92 + qualityBias * 72), 170, 640);
+      return clamp(Math.round(170 + zoomDepth * 92 + qualityBias * 72), 170, 720);
     },
     sample(pointX: number, pointY: number, maxIterations: number, out: MutableFractalSample) {
       let zx = 0;
@@ -474,14 +637,24 @@ const family = createMandelbrotFamily();
 const renderState: RenderState = {
   canvas: null,
   gl: null,
-  program: null,
+  fractalProgram: null,
+  compositeProgram: null,
+  presentProgram: null,
   buffer: null,
-  uniforms: null,
+  fractalUniforms: null,
+  compositeUniforms: null,
+  presentUniforms: null,
+  currentTarget: createRenderTargetState(),
+  historyTargets: [createRenderTargetState(), createRenderTargetState()],
+  historyReadIndex: 0,
+  historyValid: false,
   displayWidth: 0,
   displayHeight: 0,
   dpr: 1,
   lastCamera: null,
+  historyCamera: null,
   motion: 0,
+  refinement: 0,
 };
 
 const audio = createAudioState();
@@ -511,6 +684,15 @@ function calculateSegmentDuration(from: FractalWaypoint, to: FractalWaypoint) {
   const spatialDistance = distance(from.center, to.center);
   const zoomDistance = Math.abs(Math.log(Math.max(from.scale, 0.000001) / Math.max(to.scale, 0.000001)));
   return clamp(9.2 + spatialDistance * 5.6 + zoomDistance * 4.1, 9.2, 22);
+}
+
+function resetTemporalState() {
+  renderState.lastCamera = null;
+  renderState.historyCamera = null;
+  renderState.historyValid = false;
+  renderState.historyReadIndex = 0;
+  renderState.motion = 0;
+  renderState.refinement = 0;
 }
 
 function resetAudioState() {
@@ -561,8 +743,7 @@ function resetTraversalState() {
   traversal.segmentSeed = 0.37;
   traversal.desiredCamera = copyViewport(start);
   traversal.camera = start;
-  renderState.lastCamera = null;
-  renderState.motion = 0;
+  resetTemporalState();
 }
 
 function advanceSegment() {
@@ -613,6 +794,7 @@ function createProgram(gl: WebGLRenderingContext, vertexSource: string, fragment
 
   gl.attachShader(program, vertexShader);
   gl.attachShader(program, fragmentShader);
+  gl.bindAttribLocation(program, 0, "aPosition");
   gl.linkProgram(program);
   gl.deleteShader(vertexShader);
   gl.deleteShader(fragmentShader);
@@ -626,31 +808,119 @@ function createProgram(gl: WebGLRenderingContext, vertexSource: string, fragment
   return null;
 }
 
-function destroyRenderer() {
-  if (renderState.gl && renderState.buffer) {
-    renderState.gl.deleteBuffer(renderState.buffer);
+function destroyRenderTarget(gl: WebGLRenderingContext, target: RenderTarget) {
+  if (target.texture) {
+    gl.deleteTexture(target.texture);
   }
 
-  if (renderState.gl && renderState.program) {
-    renderState.gl.deleteProgram(renderState.program);
+  if (target.framebuffer) {
+    gl.deleteFramebuffer(target.framebuffer);
+  }
+
+  target.texture = null;
+  target.framebuffer = null;
+  target.width = 0;
+  target.height = 0;
+}
+
+function ensureRenderTarget(gl: WebGLRenderingContext, target: RenderTarget, width: number, height: number, filter: number) {
+  if (target.texture && target.framebuffer && target.width === width && target.height === height) {
+    return true;
+  }
+
+  destroyRenderTarget(gl, target);
+
+  const texture = gl.createTexture();
+  const framebuffer = gl.createFramebuffer();
+
+  if (!texture || !framebuffer) {
+    if (texture) gl.deleteTexture(texture);
+    if (framebuffer) gl.deleteFramebuffer(framebuffer);
+    return false;
+  }
+
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.deleteFramebuffer(framebuffer);
+    gl.deleteTexture(texture);
+    return false;
+  }
+
+  target.texture = texture;
+  target.framebuffer = framebuffer;
+  target.width = width;
+  target.height = height;
+
+  gl.viewport(0, 0, width, height);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return true;
+}
+
+function destroyRenderer() {
+  if (renderState.gl) {
+    destroyRenderTarget(renderState.gl, renderState.currentTarget);
+    destroyRenderTarget(renderState.gl, renderState.historyTargets[0]);
+    destroyRenderTarget(renderState.gl, renderState.historyTargets[1]);
+
+    if (renderState.buffer) {
+      renderState.gl.deleteBuffer(renderState.buffer);
+    }
+
+    if (renderState.fractalProgram) {
+      renderState.gl.deleteProgram(renderState.fractalProgram);
+    }
+
+    if (renderState.compositeProgram) {
+      renderState.gl.deleteProgram(renderState.compositeProgram);
+    }
+
+    if (renderState.presentProgram) {
+      renderState.gl.deleteProgram(renderState.presentProgram);
+    }
   }
 
   renderState.canvas = null;
   renderState.gl = null;
-  renderState.program = null;
+  renderState.fractalProgram = null;
+  renderState.compositeProgram = null;
+  renderState.presentProgram = null;
   renderState.buffer = null;
-  renderState.uniforms = null;
+  renderState.fractalUniforms = null;
+  renderState.compositeUniforms = null;
+  renderState.presentUniforms = null;
   renderState.displayWidth = 0;
   renderState.displayHeight = 0;
   renderState.dpr = 1;
-  renderState.lastCamera = null;
-  renderState.motion = 0;
+  resetTemporalState();
 }
 
 function ensureRenderer() {
   if (!canvas.value) return false;
 
-  if (renderState.canvas === canvas.value && renderState.gl && renderState.program && renderState.buffer && renderState.uniforms) {
+  if (
+    renderState.canvas === canvas.value &&
+    renderState.gl &&
+    renderState.fractalProgram &&
+    renderState.compositeProgram &&
+    renderState.presentProgram &&
+    renderState.buffer &&
+    renderState.fractalUniforms &&
+    renderState.compositeUniforms &&
+    renderState.presentUniforms
+  ) {
     return true;
   }
 
@@ -680,50 +950,68 @@ function ensureRenderer() {
   }
 
   const context = gl as WebGLRenderingContext;
-  const program = createProgram(context, VERTEX_SHADER_SOURCE, FRAGMENT_SHADER_SOURCE);
+  const fractalProgram = createProgram(context, VERTEX_SHADER_SOURCE, FRACTAL_FRAGMENT_SHADER_SOURCE);
+  const compositeProgram = createProgram(context, VERTEX_SHADER_SOURCE, COMPOSITE_FRAGMENT_SHADER_SOURCE);
+  const presentProgram = createProgram(context, VERTEX_SHADER_SOURCE, PRESENT_FRAGMENT_SHADER_SOURCE);
 
-  if (!program) {
+  if (!fractalProgram || !compositeProgram || !presentProgram) {
+    if (fractalProgram) context.deleteProgram(fractalProgram);
+    if (compositeProgram) context.deleteProgram(compositeProgram);
+    if (presentProgram) context.deleteProgram(presentProgram);
     return false;
   }
 
   const buffer = context.createBuffer();
   if (!buffer) {
-    context.deleteProgram(program);
+    context.deleteProgram(fractalProgram);
+    context.deleteProgram(compositeProgram);
+    context.deleteProgram(presentProgram);
     return false;
   }
 
-  context.useProgram(program);
   context.bindBuffer(context.ARRAY_BUFFER, buffer);
   context.bufferData(context.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), context.STATIC_DRAW);
-
-  const positionLocation = context.getAttribLocation(program, "aPosition");
-  if (positionLocation < 0) {
-    context.deleteBuffer(buffer);
-    context.deleteProgram(program);
-    return false;
-  }
-
-  context.enableVertexAttribArray(positionLocation);
-  context.vertexAttribPointer(positionLocation, 2, context.FLOAT, false, 0, 0);
+  context.enableVertexAttribArray(0);
+  context.vertexAttribPointer(0, 2, context.FLOAT, false, 0, 0);
   context.disable(context.DEPTH_TEST);
   context.disable(context.CULL_FACE);
+  context.disable(context.BLEND);
   context.clearColor(0, 0, 0, 0);
 
   renderState.canvas = canvas.value;
   renderState.gl = context;
-  renderState.program = program;
+  renderState.fractalProgram = fractalProgram;
+  renderState.compositeProgram = compositeProgram;
+  renderState.presentProgram = presentProgram;
   renderState.buffer = buffer;
-  renderState.uniforms = {
-    resolution: context.getUniformLocation(program, "uResolution"),
-    center: context.getUniformLocation(program, "uCenter"),
-    scale: context.getUniformLocation(program, "uScale"),
-    rotation: context.getUniformLocation(program, "uRotation"),
-    aspect: context.getUniformLocation(program, "uAspect"),
-    palettePhase: context.getUniformLocation(program, "uPalettePhase"),
-    ambientLift: context.getUniformLocation(program, "uAmbientLift"),
-    paletteEnergy: context.getUniformLocation(program, "uPaletteEnergy"),
-    stableAA: context.getUniformLocation(program, "uStableAA"),
-    maxIterations: context.getUniformLocation(program, "uMaxIterations"),
+  renderState.fractalUniforms = {
+    resolution: context.getUniformLocation(fractalProgram, "uResolution"),
+    center: context.getUniformLocation(fractalProgram, "uCenter"),
+    scale: context.getUniformLocation(fractalProgram, "uScale"),
+    rotation: context.getUniformLocation(fractalProgram, "uRotation"),
+    aspect: context.getUniformLocation(fractalProgram, "uAspect"),
+    palettePhase: context.getUniformLocation(fractalProgram, "uPalettePhase"),
+    ambientLift: context.getUniformLocation(fractalProgram, "uAmbientLift"),
+    paletteEnergy: context.getUniformLocation(fractalProgram, "uPaletteEnergy"),
+    stableAA: context.getUniformLocation(fractalProgram, "uStableAA"),
+    maxIterations: context.getUniformLocation(fractalProgram, "uMaxIterations"),
+  };
+  renderState.compositeUniforms = {
+    currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
+    historyTexture: context.getUniformLocation(compositeProgram, "uHistoryTexture"),
+    currentTexelSize: context.getUniformLocation(compositeProgram, "uCurrentTexelSize"),
+    currentCenter: context.getUniformLocation(compositeProgram, "uCurrentCenter"),
+    currentScale: context.getUniformLocation(compositeProgram, "uCurrentScale"),
+    currentRotation: context.getUniformLocation(compositeProgram, "uCurrentRotation"),
+    currentAspect: context.getUniformLocation(compositeProgram, "uCurrentAspect"),
+    previousCenter: context.getUniformLocation(compositeProgram, "uPreviousCenter"),
+    previousScale: context.getUniformLocation(compositeProgram, "uPreviousScale"),
+    previousRotation: context.getUniformLocation(compositeProgram, "uPreviousRotation"),
+    previousAspect: context.getUniformLocation(compositeProgram, "uPreviousAspect"),
+    historyBlend: context.getUniformLocation(compositeProgram, "uHistoryBlend"),
+  };
+  renderState.presentUniforms = {
+    sourceTexture: context.getUniformLocation(presentProgram, "uSourceTexture"),
   };
 
   return true;
@@ -748,6 +1036,8 @@ function updateRenderResolution() {
 
   canvas.value.width = displayWidth;
   canvas.value.height = displayHeight;
+  resetTemporalState();
+  renderState.gl.bindFramebuffer(renderState.gl.FRAMEBUFFER, null);
   renderState.gl.viewport(0, 0, displayWidth, displayHeight);
 }
 
@@ -764,11 +1054,11 @@ function evaluateInterest(center: ComplexPoint, scale: number, aspectRatio: numb
   let trapDetailSum = 0;
 
   for (let row = 0; row < rows; row++) {
-    const rowT = rows === 1 ? 0 : row / (rows - 1);
+    const rowT = row / (rows - 1);
     const offsetY = (rowT - 0.5) * spanY;
 
     for (let column = 0; column < columns; column++) {
-      const columnT = columns === 1 ? 0 : column / (columns - 1);
+      const columnT = column / (columns - 1);
       const offsetX = (columnT - 0.5) * spanX;
 
       family.sample(center.x + offsetX, center.y + offsetY, iterations, reusableInterestSample);
@@ -1132,13 +1422,51 @@ function updateTraversal(deltaSeconds: number, now: number) {
   };
 }
 
+function getQualityProfile(refinement: number) {
+  // Quality climbs back in discrete steps so we do not churn render-target sizes every frame.
+  if (refinement < 0.34) {
+    return {
+      renderScale: 0.5,
+      stableAA: 0.14,
+      iterationBias: -0.18,
+    };
+  }
+
+  if (refinement < 0.78) {
+    return {
+      renderScale: 0.75,
+      stableAA: 0.52,
+      iterationBias: 0.12,
+    };
+  }
+
+  return {
+    renderScale: 1,
+    stableAA: 1,
+    iterationBias: 0.72,
+  };
+}
+
 function renderFractal(deltaSeconds: number) {
-  if (!ensureRenderer() || !renderState.gl || !renderState.program || !renderState.uniforms) {
+  if (
+    !ensureRenderer() ||
+    !renderState.gl ||
+    !renderState.fractalProgram ||
+    !renderState.compositeProgram ||
+    !renderState.presentProgram ||
+    !renderState.fractalUniforms ||
+    !renderState.compositeUniforms ||
+    !renderState.presentUniforms ||
+    renderState.displayWidth <= 0 ||
+    renderState.displayHeight <= 0
+  ) {
     return;
   }
 
   const gl = renderState.gl;
-  const uniforms = renderState.uniforms;
+  const fractalUniforms = renderState.fractalUniforms;
+  const compositeUniforms = renderState.compositeUniforms;
+  const presentUniforms = renderState.presentUniforms;
   const aspectRatio = renderState.displayWidth / Math.max(renderState.displayHeight, 1);
   const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(traversal.camera.scale, 0.000001)));
   const dprBias = Math.max(0, Math.sqrt(renderState.dpr) - 1);
@@ -1155,23 +1483,88 @@ function renderFractal(deltaSeconds: number) {
 
   renderState.motion = damp(renderState.motion, motionTarget, 10, deltaSeconds);
 
-  const stableAA = clamp(1 - renderState.motion * 12, 0, 1);
-  const maxIterations = family.getMaxIterations(traversal.camera.scale, clamp(stableAA + dprBias + zoomDepth * 0.08, 0, 1.4));
+  const stabilityTarget = clamp(1 - renderState.motion * 12, 0, 1);
+  const refinementResponse = stabilityTarget > renderState.refinement ? 1.15 : 6.8;
+  renderState.refinement = damp(renderState.refinement, stabilityTarget, refinementResponse, deltaSeconds);
 
-  gl.useProgram(renderState.program);
-  gl.uniform2f(uniforms.resolution, renderState.displayWidth, renderState.displayHeight);
-  gl.uniform2f(uniforms.center, traversal.camera.center.x, traversal.camera.center.y);
-  gl.uniform1f(uniforms.scale, traversal.camera.scale);
-  gl.uniform1f(uniforms.rotation, traversal.camera.rotation);
-  gl.uniform1f(uniforms.aspect, aspectRatio);
-  gl.uniform1f(uniforms.palettePhase, (traversal.palettePhase + family.guidePoints[traversal.currentIndex].hueOffset) % 1);
-  gl.uniform1f(uniforms.ambientLift, 0.07 + audio.ambient * 0.08);
-  gl.uniform1f(uniforms.paletteEnergy, 0.14 + audio.palette * 0.14);
-  gl.uniform1f(uniforms.stableAA, stableAA);
-  gl.uniform1i(uniforms.maxIterations, maxIterations);
-  gl.clear(gl.COLOR_BUFFER_BIT);
+  const quality = getQualityProfile(renderState.refinement);
+  const currentWidth = Math.max(1, Math.round(renderState.displayWidth * quality.renderScale));
+  const currentHeight = Math.max(1, Math.round(renderState.displayHeight * quality.renderScale));
+
+  if (
+    !ensureRenderTarget(gl, renderState.currentTarget, currentWidth, currentHeight, gl.LINEAR) ||
+    !ensureRenderTarget(gl, renderState.historyTargets[0], renderState.displayWidth, renderState.displayHeight, gl.LINEAR) ||
+    !ensureRenderTarget(gl, renderState.historyTargets[1], renderState.displayWidth, renderState.displayHeight, gl.LINEAR)
+  ) {
+    resetTemporalState();
+    return;
+  }
+
+  const currentAspectRatio = currentWidth / Math.max(currentHeight, 1);
+  const stableAA = clamp(quality.stableAA * (0.42 + stabilityTarget * 0.58), 0, 1);
+  const maxIterations = family.getMaxIterations(
+    traversal.camera.scale,
+    clamp(quality.iterationBias + dprBias + zoomDepth * 0.08, -0.2, 1.6)
+  );
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, renderState.currentTarget.framebuffer);
+  gl.viewport(0, 0, currentWidth, currentHeight);
+  gl.useProgram(renderState.fractalProgram);
+  gl.uniform2f(fractalUniforms.resolution, currentWidth, currentHeight);
+  gl.uniform2f(fractalUniforms.center, traversal.camera.center.x, traversal.camera.center.y);
+  gl.uniform1f(fractalUniforms.scale, traversal.camera.scale);
+  gl.uniform1f(fractalUniforms.rotation, traversal.camera.rotation);
+  gl.uniform1f(fractalUniforms.aspect, currentAspectRatio);
+  gl.uniform1f(fractalUniforms.palettePhase, (traversal.palettePhase + family.guidePoints[traversal.currentIndex].hueOffset) % 1);
+  gl.uniform1f(fractalUniforms.ambientLift, 0.07 + audio.ambient * 0.08);
+  gl.uniform1f(fractalUniforms.paletteEnergy, 0.14 + audio.palette * 0.14);
+  gl.uniform1f(fractalUniforms.stableAA, stableAA);
+  gl.uniform1i(fractalUniforms.maxIterations, maxIterations);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
+  const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
+  const historyWriteIndex = 1 - renderState.historyReadIndex;
+  const historyWriteTarget = renderState.historyTargets[historyWriteIndex];
+  const historyCamera = renderState.historyCamera ?? traversal.camera;
+  const motionHistoryBlend = clamp(0.78 - renderState.motion * 10.5, 0, 0.78);
+  const historyBlend =
+    renderState.historyValid && motionHistoryBlend > 0
+      ? clamp(motionHistoryBlend + (1 - quality.renderScale) * 0.18, 0, 0.82)
+      : 0;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, historyWriteTarget.framebuffer);
+  gl.viewport(0, 0, renderState.displayWidth, renderState.displayHeight);
+  gl.useProgram(renderState.compositeProgram);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, renderState.currentTarget.texture);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, historyReadTarget.texture);
+  gl.uniform1i(compositeUniforms.currentTexture, 0);
+  gl.uniform1i(compositeUniforms.historyTexture, 1);
+  gl.uniform2f(compositeUniforms.currentTexelSize, 1 / currentWidth, 1 / currentHeight);
+  gl.uniform2f(compositeUniforms.currentCenter, traversal.camera.center.x, traversal.camera.center.y);
+  gl.uniform1f(compositeUniforms.currentScale, traversal.camera.scale);
+  gl.uniform1f(compositeUniforms.currentRotation, traversal.camera.rotation);
+  gl.uniform1f(compositeUniforms.currentAspect, aspectRatio);
+  gl.uniform2f(compositeUniforms.previousCenter, historyCamera.center.x, historyCamera.center.y);
+  gl.uniform1f(compositeUniforms.previousScale, historyCamera.scale);
+  gl.uniform1f(compositeUniforms.previousRotation, historyCamera.rotation);
+  gl.uniform1f(compositeUniforms.previousAspect, aspectRatio);
+  gl.uniform1f(compositeUniforms.historyBlend, historyBlend);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, renderState.displayWidth, renderState.displayHeight);
+  gl.useProgram(renderState.presentProgram);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, historyWriteTarget.texture);
+  gl.uniform1i(presentUniforms.sourceTexture, 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  renderState.historyReadIndex = historyWriteIndex;
+  renderState.historyValid = true;
+  renderState.historyCamera = copyViewport(traversal.camera);
   renderState.lastCamera = copyViewport(traversal.camera);
 }
 
