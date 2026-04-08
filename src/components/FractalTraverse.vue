@@ -265,12 +265,19 @@ type FractalViewport = {
   rotation: number;
 };
 
-type FractalWaypoint = {
+type FractalPoi = {
+  id: string;
   center: ComplexPoint;
   scale: number;
   bend: number;
   rotation: number;
+  bank: number;
   hueOffset: number;
+  localRadius: number;
+  railPull: number;
+  linger: number;
+  interestBias: number;
+  outbound: string[];
 };
 
 type MutableFractalSample = {
@@ -281,7 +288,8 @@ type MutableFractalSample = {
 
 type FractalFamily = {
   id: string;
-  guidePoints: FractalWaypoint[];
+  pointsOfInterest: FractalPoi[];
+  getPoiIndexById: (id: string) => number;
   getStartViewport: () => FractalViewport;
   getMaxIterations: (scale: number, qualityBias?: number) => number;
   sample: (pointX: number, pointY: number, maxIterations: number, out: MutableFractalSample) => void;
@@ -307,6 +315,8 @@ type AudioResponseState = {
 type TraversalState = {
   currentIndex: number;
   nextIndex: number;
+  previousIndex: number;
+  recentPoiIndices: number[];
   progress: number;
   segmentDuration: number;
   pathSpeed: number;
@@ -314,6 +324,7 @@ type TraversalState = {
   driftPhase: number;
   palettePhase: number;
   segmentSeed: number;
+  segmentEscape: number;
   desiredCamera: FractalViewport;
   camera: FractalViewport;
 };
@@ -481,20 +492,6 @@ function dampAngle(current: number, target: number, smoothing: number, deltaSeco
   return current + angleDelta(target, current) * (1 - Math.exp(-smoothing * deltaSeconds));
 }
 
-function clampVectorMagnitude(point: ComplexPoint, maxMagnitude: number) {
-  const magnitude = Math.hypot(point.x, point.y);
-
-  if (magnitude <= maxMagnitude || magnitude === 0) {
-    return point;
-  }
-
-  const scale = maxMagnitude / magnitude;
-  return {
-    x: point.x * scale,
-    y: point.y * scale,
-  };
-}
-
 function copyViewport(camera: FractalViewport): FractalViewport {
   return {
     center: {
@@ -516,26 +513,132 @@ function createRenderTargetState(): RenderTarget {
 }
 
 function createMandelbrotFamily(): FractalFamily {
-  // These guide points keep the macro-travel curated while the local interest scan
-  // pulls the camera onto nearby boundary-rich structure.
-  const guidePoints: FractalWaypoint[] = [
-    { center: { x: -0.5, y: 0 }, scale: 2.35, bend: 0.12, rotation: -0.02, hueOffset: 0.02 },
-    { center: { x: -0.785, y: 0.125 }, scale: 0.52, bend: 0.18, rotation: 0.03, hueOffset: 0.14 },
-    { center: { x: -0.743643887, y: 0.131825904 }, scale: 0.16, bend: -0.16, rotation: 0.06, hueOffset: 0.24 },
-    { center: { x: -0.744935, y: 0.13419 }, scale: 0.038, bend: 0.24, rotation: 0.09, hueOffset: 0.36 },
-    { center: { x: -0.5, y: 0 }, scale: 1.38, bend: -0.06, rotation: -0.03, hueOffset: 0.48 },
-    { center: { x: -1.25066, y: 0.02012 }, scale: 0.18, bend: 0.16, rotation: 0.04, hueOffset: 0.6 },
-    { center: { x: -1.76878, y: 0.00174 }, scale: 0.34, bend: -0.18, rotation: -0.05, hueOffset: 0.68 },
-    { center: { x: -0.5, y: 0 }, scale: 1.18, bend: 0.1, rotation: 0.01, hueOffset: 0.78 },
-    { center: { x: -0.15894, y: 1.03419 }, scale: 0.24, bend: 0.18, rotation: 0.05, hueOffset: 0.86 },
-    { center: { x: -0.7412, y: 0.1587 }, scale: 0.12, bend: -0.16, rotation: 0.08, hueOffset: 0.94 },
+  // The traversal now rides a small hand-picked POI network. Local scanning can
+  // polish framing near each stop, but the macro flight stays on these rails.
+  const pointsOfInterest: FractalPoi[] = [
+    {
+      id: "origin",
+      center: { x: -0.5, y: 0 },
+      scale: 2.35,
+      bend: 0.1,
+      rotation: -0.02,
+      bank: -0.02,
+      hueOffset: 0.02,
+      localRadius: 0.08,
+      railPull: 0.9,
+      linger: 1.04,
+      interestBias: 0.08,
+      outbound: ["seahorse-valley", "antenna-root", "north-ridge"],
+    },
+    {
+      id: "seahorse-valley",
+      center: { x: -0.785, y: 0.125 },
+      scale: 0.52,
+      bend: 0.18,
+      rotation: 0.03,
+      bank: 0.04,
+      hueOffset: 0.14,
+      localRadius: 0.11,
+      railPull: 0.83,
+      linger: 1,
+      interestBias: 0.14,
+      outbound: ["seahorse-detail", "spiral-shelf", "origin"],
+    },
+    {
+      id: "seahorse-detail",
+      center: { x: -0.743643887, y: 0.131825904 },
+      scale: 0.16,
+      bend: -0.14,
+      rotation: 0.06,
+      bank: 0.07,
+      hueOffset: 0.24,
+      localRadius: 0.13,
+      railPull: 0.8,
+      linger: 1.08,
+      interestBias: 0.2,
+      outbound: ["mini-broccoli", "spiral-shelf", "seahorse-valley"],
+    },
+    {
+      id: "mini-broccoli",
+      center: { x: -0.744935, y: 0.13419 },
+      scale: 0.038,
+      bend: 0.22,
+      rotation: 0.09,
+      bank: 0.1,
+      hueOffset: 0.36,
+      localRadius: 0.15,
+      railPull: 0.78,
+      linger: 1.16,
+      interestBias: 0.26,
+      outbound: ["seahorse-detail", "spiral-shelf", "origin"],
+    },
+    {
+      id: "antenna-root",
+      center: { x: -1.25066, y: 0.02012 },
+      scale: 0.18,
+      bend: 0.15,
+      rotation: 0.04,
+      bank: 0.03,
+      hueOffset: 0.6,
+      localRadius: 0.11,
+      railPull: 0.84,
+      linger: 1,
+      interestBias: 0.16,
+      outbound: ["left-claw", "origin", "spiral-shelf"],
+    },
+    {
+      id: "left-claw",
+      center: { x: -1.76878, y: 0.00174 },
+      scale: 0.34,
+      bend: -0.18,
+      rotation: -0.05,
+      bank: -0.06,
+      hueOffset: 0.68,
+      localRadius: 0.1,
+      railPull: 0.87,
+      linger: 0.96,
+      interestBias: 0.1,
+      outbound: ["antenna-root", "origin"],
+    },
+    {
+      id: "north-ridge",
+      center: { x: -0.15894, y: 1.03419 },
+      scale: 0.24,
+      bend: 0.18,
+      rotation: 0.05,
+      bank: 0.05,
+      hueOffset: 0.86,
+      localRadius: 0.12,
+      railPull: 0.82,
+      linger: 1.02,
+      interestBias: 0.14,
+      outbound: ["origin", "spiral-shelf", "seahorse-valley"],
+    },
+    {
+      id: "spiral-shelf",
+      center: { x: -0.7412, y: 0.1587 },
+      scale: 0.12,
+      bend: -0.16,
+      rotation: 0.08,
+      bank: 0.08,
+      hueOffset: 0.94,
+      localRadius: 0.14,
+      railPull: 0.79,
+      linger: 1.06,
+      interestBias: 0.2,
+      outbound: ["seahorse-valley", "north-ridge", "origin", "antenna-root"],
+    },
   ];
+  const poiIndexById = new Map(pointsOfInterest.map((poi, index) => [poi.id, index]));
 
   return {
     id: "mandelbrot",
-    guidePoints,
+    pointsOfInterest,
+    getPoiIndexById(id: string) {
+      return poiIndexById.get(id) ?? 0;
+    },
     getStartViewport() {
-      const first = guidePoints[0];
+      const first = pointsOfInterest[0];
       return {
         center: { x: first.center.x, y: first.center.y },
         scale: first.scale,
@@ -598,16 +701,21 @@ function createAudioState(): AudioResponseState {
 
 function createTraversalState(fractalFamily: FractalFamily): TraversalState {
   const camera = fractalFamily.getStartViewport();
+  const startPoi = fractalFamily.pointsOfInterest[0];
+  const nextIndex = fractalFamily.getPoiIndexById(startPoi.outbound[0] ?? startPoi.id);
   return {
     currentIndex: 0,
-    nextIndex: 1,
+    nextIndex,
+    previousIndex: 0,
+    recentPoiIndices: [0],
     progress: 0,
-    segmentDuration: calculateSegmentDuration(fractalFamily.guidePoints[0], fractalFamily.guidePoints[1]),
+    segmentDuration: calculateSegmentDuration(fractalFamily.pointsOfInterest[0], fractalFamily.pointsOfInterest[nextIndex]),
     pathSpeed: 1,
     bendPhase: 0,
     driftPhase: 0,
-    palettePhase: fractalFamily.guidePoints[0].hueOffset,
+    palettePhase: fractalFamily.pointsOfInterest[0].hueOffset,
     segmentSeed: 0.37,
+    segmentEscape: 0,
     desiredCamera: copyViewport(camera),
     camera,
   };
@@ -679,11 +787,12 @@ const strength = computed(() => {
   return clamp(Number(settings.fractalTraverseStrength) || 0.84, 0.35, 1.35);
 });
 
-function calculateSegmentDuration(from: FractalWaypoint, to: FractalWaypoint) {
+function calculateSegmentDuration(from: FractalPoi, to: FractalPoi) {
   // Blend spatial and zoom distance so transitions read as travel, not cuts.
   const spatialDistance = distance(from.center, to.center);
   const zoomDistance = Math.abs(Math.log(Math.max(from.scale, 0.000001) / Math.max(to.scale, 0.000001)));
-  return clamp(9.2 + spatialDistance * 5.6 + zoomDistance * 4.1, 9.2, 22);
+  const lingerBias = lerp(from.linger, to.linger, 0.5);
+  return clamp((8.9 + spatialDistance * 5.2 + zoomDistance * 3.9) * lingerBias, 8.8, 22.5);
 }
 
 function resetTemporalState() {
@@ -732,29 +841,23 @@ function resetInterestState() {
 
 function resetTraversalState() {
   const start = family.getStartViewport();
+  const firstPoi = family.pointsOfInterest[0];
+  const nextIndex = family.getPoiIndexById(firstPoi.outbound[0] ?? firstPoi.id);
   traversal.currentIndex = 0;
-  traversal.nextIndex = 1;
+  traversal.nextIndex = nextIndex;
+  traversal.previousIndex = 0;
+  traversal.recentPoiIndices = [0];
   traversal.progress = 0;
-  traversal.segmentDuration = calculateSegmentDuration(family.guidePoints[0], family.guidePoints[1]);
+  traversal.segmentDuration = calculateSegmentDuration(family.pointsOfInterest[0], family.pointsOfInterest[nextIndex]);
   traversal.pathSpeed = 1;
   traversal.bendPhase = 0;
   traversal.driftPhase = 0;
-  traversal.palettePhase = family.guidePoints[0].hueOffset;
+  traversal.palettePhase = family.pointsOfInterest[0].hueOffset;
   traversal.segmentSeed = 0.37;
+  traversal.segmentEscape = 0;
   traversal.desiredCamera = copyViewport(start);
   traversal.camera = start;
   resetTemporalState();
-}
-
-function advanceSegment() {
-  traversal.currentIndex = traversal.nextIndex;
-  traversal.nextIndex = (traversal.nextIndex + 1) % family.guidePoints.length;
-  traversal.progress -= 1;
-  traversal.segmentDuration = calculateSegmentDuration(
-    family.guidePoints[traversal.currentIndex],
-    family.guidePoints[traversal.nextIndex]
-  );
-  traversal.segmentSeed += 1.61803398875;
 }
 
 function createShader(gl: WebGLRenderingContext, type: number, source: string) {
@@ -1130,29 +1233,115 @@ function evaluateInterest(center: ComplexPoint, scale: number, aspectRatio: numb
   };
 }
 
-function getCorrectionLimit(scale: number, lowInterestTime: number) {
-  // Local interest guidance stays subordinate to the main bezier rail, even when rescuing
-  // a dull region, so the camera reads as forward travel instead of sideways chasing.
-  return scale * clamp(0.09 + lowInterestTime * 0.02, 0.09, 0.16);
+function getViewportAspectRatio() {
+  return Math.max((viewport.width || window.innerWidth || 1) / Math.max(viewport.height || window.innerHeight || 1, 1), 0.6);
 }
 
-function scanNearbyInterest(baseCenter: ComplexPoint, baseScale: number, aspectRatio: number) {
+function clampOffsetToRailEnvelope(
+  offset: ComplexPoint,
+  tangentUnit: ComplexPoint,
+  normalUnit: ComplexPoint,
+  tangentLimit: number,
+  normalLimit: number
+) {
+  const tangentAmount = clamp(offset.x * tangentUnit.x + offset.y * tangentUnit.y, -tangentLimit, tangentLimit);
+  const normalAmount = clamp(offset.x * normalUnit.x + offset.y * normalUnit.y, -normalLimit, normalLimit);
+
+  return {
+    x: tangentUnit.x * tangentAmount + normalUnit.x * normalAmount,
+    y: tangentUnit.y * tangentAmount + normalUnit.y * normalAmount,
+  };
+}
+
+function getRailOffsetPenalty(
+  offset: ComplexPoint,
+  tangentUnit: ComplexPoint,
+  normalUnit: ComplexPoint,
+  tangentLimit: number,
+  normalLimit: number
+) {
+  const tangentAmount = offset.x * tangentUnit.x + offset.y * tangentUnit.y;
+  const normalAmount = offset.x * normalUnit.x + offset.y * normalUnit.y;
+
+  return (
+    (Math.abs(tangentAmount) / Math.max(tangentLimit, 0.000001)) * 0.035 +
+    (Math.abs(normalAmount) / Math.max(normalLimit, 0.000001)) * 0.07
+  );
+}
+
+function pickNextPoiIndex(currentIndex: number, previousIndex: number, aspectRatio: number) {
+  const currentPoi = family.pointsOfInterest[currentIndex];
+  const outboundIds =
+    currentPoi.outbound.length > 0
+      ? currentPoi.outbound
+      : family.pointsOfInterest.filter((_, index) => index !== currentIndex).map((poi) => poi.id);
+  const outboundIndices = outboundIds.map((id) => family.getPoiIndexById(id));
+  const audioAdventure = clamp(audio.noveltySmoothed * 0.78 + audio.surge * 1.35, 0, 1);
+  let bestIndex = outboundIndices[0] ?? currentIndex;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const candidateIndex of outboundIndices) {
+    if (candidateIndex === currentIndex) continue;
+
+    const candidatePoi = family.pointsOfInterest[candidateIndex];
+    const metrics = evaluateInterest(candidatePoi.center, clamp(candidatePoi.scale * 1.04, 0.02, 3.2), aspectRatio);
+    const zoomDistance = Math.abs(Math.log(Math.max(currentPoi.scale, 0.000001) / Math.max(candidatePoi.scale, 0.000001)));
+    const revisitIndex = traversal.recentPoiIndices.lastIndexOf(candidateIndex);
+    const revisitPenalty =
+      revisitIndex >= 0 ? clamp(0.26 - (traversal.recentPoiIndices.length - 1 - revisitIndex) * 0.06, 0.08, 0.26) : 0;
+    const backtrackPenalty = candidateIndex === previousIndex ? 0.16 : 0;
+    const smoothTravelPenalty = clamp(zoomDistance * 0.09, 0, 0.18);
+    const audioAdventureBonus = audioAdventure * clamp(zoomDistance * 0.08 + Math.abs(candidatePoi.bend - currentPoi.bend) * 0.1, 0, 0.16);
+    const score = metrics.score + candidatePoi.interestBias + audioAdventureBonus - revisitPenalty - backtrackPenalty - smoothTravelPenalty;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = candidateIndex;
+    }
+  }
+
+  return bestIndex;
+}
+
+function advanceSegment(aspectRatio: number) {
+  traversal.previousIndex = traversal.currentIndex;
+  traversal.currentIndex = traversal.nextIndex;
+  traversal.progress -= 1;
+  traversal.segmentEscape = 0;
+  traversal.recentPoiIndices = [...traversal.recentPoiIndices, traversal.currentIndex].slice(-4);
+  traversal.nextIndex = pickNextPoiIndex(traversal.currentIndex, traversal.previousIndex, aspectRatio);
+  traversal.segmentDuration = calculateSegmentDuration(
+    family.pointsOfInterest[traversal.currentIndex],
+    family.pointsOfInterest[traversal.nextIndex]
+  );
+  traversal.segmentSeed += 1.61803398875;
+}
+
+function scanNearbyInterest(
+  baseCenter: ComplexPoint,
+  baseScale: number,
+  aspectRatio: number,
+  tangentUnit: ComplexPoint,
+  normalUnit: ComplexPoint,
+  tangentLimit: number,
+  normalLimit: number
+) {
   const base = evaluateInterest(baseCenter, baseScale, aspectRatio);
-  const lowInterest = base.score < 0.54 || interest.lowInterestTime > 0.3;
-  const searchRadius = clamp(baseScale * (lowInterest ? 0.58 : 0.38), 0.014, 0.52);
-  const scaleFactors = lowInterest ? [1.18, 1.06, 1, 0.94] : [1.06, 1, 0.94];
-  const ringFactors = [0, 0.34, 0.62];
+  const lowInterest = base.score < 0.58 || interest.lowInterestTime > 0.25;
+  const tangentSearch = tangentLimit * (lowInterest ? 1.06 : 0.84);
+  const normalSearch = normalLimit * (lowInterest ? 1.06 : 0.8);
+  const scaleFactors = lowInterest ? [1.1, 1.02, 0.97] : [1.04, 1, 0.98];
+  const ringFactors = [0, 0.46, 0.82];
   let best = base;
 
   for (const ringFactor of ringFactors) {
-    const radialDistance = searchRadius * ringFactor;
-    const samplesOnRing = ringFactor === 0 ? 1 : 8;
+    const samplesOnRing = ringFactor === 0 ? 1 : 6;
 
     for (let step = 0; step < samplesOnRing; step++) {
       const angle = interest.searchPhase + (step / Math.max(1, samplesOnRing)) * Math.PI * 2;
       const offset = {
-        x: Math.cos(angle) * radialDistance * Math.min(aspectRatio, 1.85),
-        y: Math.sin(angle) * radialDistance,
+        x: tangentUnit.x * Math.cos(angle) * tangentSearch * ringFactor + normalUnit.x * Math.sin(angle) * normalSearch * ringFactor,
+        y: tangentUnit.y * Math.cos(angle) * tangentSearch * ringFactor + normalUnit.y * Math.sin(angle) * normalSearch * ringFactor,
       };
 
       for (const scaleFactor of scaleFactors) {
@@ -1164,7 +1353,7 @@ function scanNearbyInterest(baseCenter: ComplexPoint, baseScale: number, aspectR
         const metrics = evaluateInterest(candidateCenter, candidateScale, aspectRatio);
         const continuityPenalty =
           (ringFactor > 0 ? ringFactor * 0.08 : 0) +
-          Math.abs(Math.log(candidateScale / baseScale)) * 0.08;
+          Math.abs(Math.log(candidateScale / baseScale)) * 0.1;
         const adjustedScore = metrics.score - continuityPenalty;
 
         if (adjustedScore > best.score) {
@@ -1180,83 +1369,95 @@ function scanNearbyInterest(baseCenter: ComplexPoint, baseScale: number, aspectR
   return { base, best };
 }
 
-function updateInterestGuidance(baseCenter: ComplexPoint, baseScale: number, deltaSeconds: number, now: number) {
-  const aspectRatio = Math.max((viewport.width || window.innerWidth || 1) / Math.max(viewport.height || window.innerHeight || 1, 1), 0.6);
-  const correctionLimit = getCorrectionLimit(baseScale, interest.lowInterestTime);
+function updateInterestGuidance(
+  baseCenter: ComplexPoint,
+  baseScale: number,
+  deltaSeconds: number,
+  now: number,
+  tangentUnit: ComplexPoint,
+  normalUnit: ComplexPoint,
+  tangentLimit: number,
+  normalLimit: number
+) {
+  const aspectRatio = getViewportAspectRatio();
 
-  if (!interest.lastEvaluationAt || now - interest.lastEvaluationAt >= 360) {
-    const { base, best } = scanNearbyInterest(baseCenter, baseScale, aspectRatio);
-    const hasFocusTarget = Math.hypot(interest.focusTargetOffset.x, interest.focusTargetOffset.y) > baseScale * 0.002;
-    const currentTargetOffset = clampVectorMagnitude(interest.focusTargetOffset, correctionLimit);
+  if (!interest.lastEvaluationAt || now - interest.lastEvaluationAt >= 420) {
+    const { base, best } = scanNearbyInterest(baseCenter, baseScale, aspectRatio, tangentUnit, normalUnit, tangentLimit, normalLimit);
+    const hasFocusTarget = Math.hypot(interest.focusTargetOffset.x, interest.focusTargetOffset.y) > baseScale * 0.0015;
+    const currentTargetOffset = clampOffsetToRailEnvelope(interest.focusTargetOffset, tangentUnit, normalUnit, tangentLimit, normalLimit);
     const currentTargetCenter = {
       x: baseCenter.x + currentTargetOffset.x,
       y: baseCenter.y + currentTargetOffset.y,
     };
     const currentTargetMetrics = hasFocusTarget ? evaluateInterest(currentTargetCenter, baseScale, aspectRatio) : base;
-    const currentTargetPenalty =
-      hasFocusTarget ? (Math.hypot(currentTargetOffset.x, currentTargetOffset.y) / Math.max(correctionLimit, 0.000001)) * 0.05 : 0;
+    const currentTargetPenalty = hasFocusTarget
+      ? getRailOffsetPenalty(currentTargetOffset, tangentUnit, normalUnit, tangentLimit, normalLimit)
+      : 0;
     const currentTargetScore = hasFocusTarget ? currentTargetMetrics.score - currentTargetPenalty : base.score;
-    const candidateOffset = clampVectorMagnitude(
+    const candidateOffset = clampOffsetToRailEnvelope(
       {
         x: best.center.x - baseCenter.x,
         y: best.center.y - baseCenter.y,
       },
-      correctionLimit
+      tangentUnit,
+      normalUnit,
+      tangentLimit,
+      normalLimit
     );
-    const candidatePenalty = (Math.hypot(candidateOffset.x, candidateOffset.y) / Math.max(correctionLimit, 0.000001)) * 0.05;
+    const candidatePenalty = getRailOffsetPenalty(candidateOffset, tangentUnit, normalUnit, tangentLimit, normalLimit);
     const candidateScore = best.score - candidatePenalty;
-    const focusClearlyBad = currentTargetScore < 0.46 || (base.score < 0.42 && interest.lowInterestTime > 0.8);
+    const focusClearlyBad = currentTargetScore < 0.5 || (base.score < 0.46 && interest.lowInterestTime > 0.9);
     const dwellExpired = now >= interest.focusTargetHoldUntil;
     // The focus target is sticky on purpose: we only swap it out when a new local sample is
     // clearly better or when the current target has been boring for too long.
-    const replacementMargin = focusClearlyBad ? 0.05 : dwellExpired ? 0.14 : 0.24;
+    const replacementMargin = !hasFocusTarget ? 0.06 : focusClearlyBad ? 0.1 : dwellExpired ? 0.2 : 0.32;
     const shouldReplaceFocus =
       candidateScore > currentTargetScore + replacementMargin && (!hasFocusTarget || dwellExpired || focusClearlyBad);
     const shouldReleaseFocus =
-      hasFocusTarget && dwellExpired && currentTargetScore < base.score - 0.08 && candidateScore <= currentTargetScore + 0.03;
+      hasFocusTarget && dwellExpired && currentTargetScore < base.score - 0.06 && candidateScore <= currentTargetScore + 0.05;
 
     if (shouldReplaceFocus) {
       interest.focusTargetOffset = candidateOffset;
       interest.focusTargetScore = candidateScore;
-      interest.focusTargetHoldUntil = now + (focusClearlyBad ? 700 : 1350);
+      interest.focusTargetHoldUntil = now + (focusClearlyBad ? 1100 : 1900);
     } else if (shouldReleaseFocus) {
       interest.focusTargetOffset = { x: 0, y: 0 };
       interest.focusTargetScore = base.score;
-      interest.focusTargetHoldUntil = now + 900;
+      interest.focusTargetHoldUntil = now + 1200;
     }
 
     interest.desiredCurrentScore = base.score;
     interest.desiredBestScore = Math.max(candidateScore, currentTargetScore, base.score);
     interest.lastEvaluationAt = now;
-    interest.searchPhase = (interest.searchPhase + 0.48 + audio.bend * 0.16) % (Math.PI * 2);
+    interest.searchPhase = (interest.searchPhase + 0.36 + audio.bend * 0.08) % (Math.PI * 2);
 
-    const lowInterestPressure = clamp((0.56 - base.score) / 0.24, 0, 1);
+    const lowInterestPressure = clamp((0.58 - base.score) / 0.26, 0, 1);
     const betterScale = Math.max(1, best.scale / baseScale);
 
     // Zoom response is continuous now: low-interest regions gradually ease off zoom pressure
     // instead of flipping between allowed and blocked states on each rescan.
     interest.desiredZoomGovernor =
       lowInterestPressure > 0
-        ? clamp(lerp(1, Math.max(1 + lowInterestPressure * 0.1, betterScale), 0.82), 1, 1.22)
+        ? clamp(lerp(1, Math.max(1 + lowInterestPressure * 0.07, betterScale), 0.7), 1, 1.18)
         : 1;
     interest.desiredZoomPermission =
       lowInterestPressure > 0
-        ? clamp(1 - lowInterestPressure * 0.7, 0.32, 1)
+        ? clamp(1 - lowInterestPressure * 0.58, 0.4, 1)
         : 1;
   }
 
-  interest.currentScore = damp(interest.currentScore, interest.desiredCurrentScore, 2.1, deltaSeconds);
-  interest.bestScore = damp(interest.bestScore, interest.desiredBestScore, 1.9, deltaSeconds);
+  interest.currentScore = damp(interest.currentScore, interest.desiredCurrentScore, 1.9, deltaSeconds);
+  interest.bestScore = damp(interest.bestScore, interest.desiredBestScore, 1.7, deltaSeconds);
 
-  const lowInterestPressure = clamp((0.54 - interest.currentScore) / 0.22, 0, 1);
+  const lowInterestPressure = clamp((0.56 - interest.currentScore) / 0.2, 0, 1);
   if (lowInterestPressure > 0) {
-    interest.lowInterestTime = clamp(interest.lowInterestTime + deltaSeconds * (0.42 + lowInterestPressure * 1.08), 0, 4.5);
+    interest.lowInterestTime = clamp(interest.lowInterestTime + deltaSeconds * (0.34 + lowInterestPressure * 0.98), 0, 4.5);
   } else {
-    interest.lowInterestTime = Math.max(0, interest.lowInterestTime - deltaSeconds * 0.95);
+    interest.lowInterestTime = Math.max(0, interest.lowInterestTime - deltaSeconds * 0.82);
   }
 
-  const correctionResponse = 0.9 + clamp(interest.lowInterestTime / 2.2, 0, 1) * 0.8;
-  const zoomResponse = 1 + lowInterestPressure * 0.8;
+  const correctionResponse = 0.72 + clamp(interest.lowInterestTime / 2.2, 0, 1) * 0.64;
+  const zoomResponse = 0.88 + lowInterestPressure * 0.58;
 
   interest.focusOffset.x = damp(interest.focusOffset.x, interest.focusTargetOffset.x, correctionResponse, deltaSeconds);
   interest.focusOffset.y = damp(interest.focusOffset.y, interest.focusTargetOffset.y, correctionResponse, deltaSeconds);
@@ -1332,23 +1533,26 @@ function updateAudioResponse(deltaSeconds: number) {
 
 function updateTraversal(deltaSeconds: number, now: number) {
   const reactivity = clamp(0.5 + ((strength.value - 0.35) / 1) * 0.95, 0.5, 1.45);
-  const baseSpeed = 0.92 + audio.ambient * 0.12;
-  const lowInterestDrag = clamp(interest.lowInterestTime * 0.03, 0, 0.12);
-  const speedTarget = clamp(baseSpeed + audio.zoom * 0.16 * reactivity - lowInterestDrag, 0.76, 1.28);
+  const aspectRatio = getViewportAspectRatio();
+  const escapeTarget = clamp((interest.lowInterestTime - 0.55) / 1.35, 0, 1);
+  const calmCruise = 0.82 + audio.ambient * 0.08;
+  const audioTravelBias = (audio.noveltySmoothed * 0.08 + audio.surge * 0.14) * reactivity;
 
-  traversal.pathSpeed = damp(traversal.pathSpeed, speedTarget, 2.6, deltaSeconds);
-  traversal.progress += (deltaSeconds / traversal.segmentDuration) * traversal.pathSpeed;
-  traversal.bendPhase += deltaSeconds * (0.34 + audio.bend * 0.45);
-  traversal.driftPhase += deltaSeconds * (0.22 + audio.ambient * 0.36);
+  traversal.segmentEscape = damp(traversal.segmentEscape, escapeTarget, 2.1, deltaSeconds);
+  const speedTarget = clamp(calmCruise + audioTravelBias + traversal.segmentEscape * 0.22, 0.76, 1.16);
+  traversal.pathSpeed = damp(traversal.pathSpeed, speedTarget, 2.1, deltaSeconds);
+  traversal.progress += (deltaSeconds / traversal.segmentDuration) * traversal.pathSpeed * (1 + traversal.segmentEscape * 0.26);
+  traversal.bendPhase += deltaSeconds * (0.28 + audio.bend * 0.26);
+  traversal.driftPhase += deltaSeconds * (0.16 + audio.ambient * 0.22);
   traversal.palettePhase = (traversal.palettePhase + deltaSeconds * (0.016 + audio.palette * 0.028)) % 1;
 
   while (traversal.progress >= 1) {
-    advanceSegment();
+    advanceSegment(aspectRatio);
   }
 
-  const from = family.guidePoints[traversal.currentIndex];
-  const to = family.guidePoints[traversal.nextIndex];
-  const easedPath = smoothStep(traversal.progress);
+  const from = family.pointsOfInterest[traversal.currentIndex];
+  const to = family.pointsOfInterest[traversal.nextIndex];
+  const easedPath = smoothStep(clamp(traversal.progress, 0, 1));
   const directionX = to.center.x - from.center.x;
   const directionY = to.center.y - from.center.y;
   const directionLength = Math.hypot(directionX, directionY);
@@ -1358,26 +1562,20 @@ function updateTraversal(deltaSeconds: number, now: number) {
   const normalX = -unitY;
   const normalY = unitX;
   const zoomDistance = Math.abs(Math.log(Math.max(from.scale, 0.000001) / Math.max(to.scale, 0.000001)));
-  const segmentSpan = Math.max(directionLength, (from.scale + to.scale) * (0.62 + zoomDistance * 0.24));
+  const segmentSpan = Math.max(directionLength, (from.scale + to.scale) * (0.6 + zoomDistance * 0.22));
   const bendLift =
     segmentSpan *
-    ((from.bend + to.bend) * 0.5 + Math.sin(traversal.bendPhase + traversal.segmentSeed) * 0.06 * audio.bend * reactivity);
+    ((from.bend + to.bend) * 0.5 + Math.sin(traversal.bendPhase + traversal.segmentSeed) * 0.045 * audio.bend * reactivity);
   const controlA = {
-    x: from.center.x + unitX * segmentSpan * 0.34 + normalX * bendLift,
-    y: from.center.y + unitY * segmentSpan * 0.34 + normalY * bendLift,
+    x: from.center.x + unitX * segmentSpan * 0.32 + normalX * bendLift,
+    y: from.center.y + unitY * segmentSpan * 0.32 + normalY * bendLift,
   };
   const controlB = {
-    x: to.center.x - unitX * segmentSpan * 0.3 - normalX * bendLift * 0.86,
-    y: to.center.y - unitY * segmentSpan * 0.3 - normalY * bendLift * 0.86,
+    x: to.center.x - unitX * segmentSpan * 0.28 - normalX * bendLift * 0.84,
+    y: to.center.y - unitY * segmentSpan * 0.28 - normalY * bendLift * 0.84,
   };
   const pathPoint = cubicBezierPoint(from.center, controlA, controlB, to.center, easedPath);
-  const baseScale = Math.exp(lerp(Math.log(from.scale), Math.log(to.scale), smoothStep(clamp(traversal.progress, 0, 1))));
-
-  updateInterestGuidance(pathPoint, baseScale, deltaSeconds, now);
-
-  const driftAmplitude = baseScale * (0.022 + audio.ambient * 0.016 + audio.bend * 0.01);
-  const driftX = Math.cos(traversal.driftPhase + traversal.segmentSeed * 0.73) * driftAmplitude * 0.78;
-  const driftY = Math.sin(traversal.driftPhase * 0.94 - traversal.segmentSeed * 0.41) * driftAmplitude * 0.55;
+  const baseScale = Math.exp(lerp(Math.log(from.scale), Math.log(to.scale), easedPath));
   const tangent = cubicBezierTangent(from.center, controlA, controlB, to.center, easedPath);
   const tangentAhead = cubicBezierTangent(from.center, controlA, controlB, to.center, clamp(easedPath + 0.08, 0, 1));
   const tangentMagnitude = Math.max(Math.hypot(tangent.x, tangent.y), 0.000001);
@@ -1385,22 +1583,45 @@ function updateTraversal(deltaSeconds: number, now: number) {
     x: tangent.x / tangentMagnitude,
     y: tangent.y / tangentMagnitude,
   };
+  const normalUnit = {
+    x: -tangentUnit.y,
+    y: tangentUnit.x,
+  };
+  const leadDistance = baseScale * clamp(0.026 + traversal.pathSpeed * 0.018 + traversal.segmentEscape * 0.018, 0.026, 0.07);
+  const railAnchor = {
+    x: pathPoint.x + tangentUnit.x * leadDistance,
+    y: pathPoint.y + tangentUnit.y * leadDistance,
+  };
+  const localRadius = lerp(from.localRadius, to.localRadius, easedPath);
+  const tangentLimit = baseScale * clamp(localRadius * 1.14 + traversal.segmentEscape * 0.028, 0.07, 0.19);
+  const normalLimit = baseScale * clamp(localRadius * 0.82 + traversal.segmentEscape * 0.018, 0.055, 0.14);
+
+  updateInterestGuidance(railAnchor, baseScale, deltaSeconds, now, tangentUnit, normalUnit, tangentLimit, normalLimit);
+
+  const driftNormal = Math.sin(traversal.driftPhase + traversal.segmentSeed * 0.61) * baseScale * (0.007 + audio.ambient * 0.007);
+  const driftTangent = Math.cos(traversal.driftPhase * 0.63 - traversal.segmentSeed * 0.27) * baseScale * (0.004 + audio.ambient * 0.004);
+  const driftX = tangentUnit.x * driftTangent + normalUnit.x * driftNormal;
+  const driftY = tangentUnit.y * driftTangent + normalUnit.y * driftNormal;
   const tangentAngle = Math.atan2(tangentUnit.y, tangentUnit.x);
   const tangentAheadAngle = Math.atan2(tangentAhead.y, tangentAhead.x);
-  const pathBank = clamp(tangentUnit.y * 0.16 + tangentUnit.x * 0.04, -0.18, 0.18);
-  const curvatureBank = clamp(angleDelta(tangentAheadAngle, tangentAngle) * 2.4, -0.14, 0.14);
+  const headingBias = clamp(Math.sin(tangentAngle) * 0.035, -0.035, 0.035);
+  const curvatureBank = clamp(angleDelta(tangentAheadAngle, tangentAngle) * 3.1, -0.16, 0.16);
+  const focusNormalAmount = interest.focusOffset.x * normalUnit.x + interest.focusOffset.y * normalUnit.y;
+  const correctionBank = clamp((focusNormalAmount / Math.max(normalLimit, 0.000001)) * 0.05, -0.05, 0.05);
   const rotationTarget =
-    lerp(from.rotation, to.rotation, easedPath) +
-    pathBank +
+    lerp(from.rotation + from.bank, to.rotation + to.bank, easedPath) +
+    headingBias +
     curvatureBank +
-    Math.sin(traversal.bendPhase * 0.52 + traversal.segmentSeed) * (0.014 + audio.bend * 0.032);
-  const audioZoomFactor = 1 - audio.zoom * 0.045 * reactivity * interest.zoomPermission;
-  const correctionInfluence = clamp(0.68 + interest.lowInterestTime * 0.06, 0.68, 0.84);
+    correctionBank +
+    Math.sin(traversal.bendPhase * 0.42 + traversal.segmentSeed) * (0.008 + audio.bend * 0.014);
+  const audioZoomFactor = 1 - audio.zoom * 0.03 * reactivity * interest.zoomPermission;
+  const railPull = lerp(from.railPull, to.railPull, easedPath);
+  const correctionInfluence = clamp((1 - railPull) * 2.2 + traversal.segmentEscape * 0.08, 0.42, 0.72);
 
   traversal.desiredCamera = {
     center: {
-      x: pathPoint.x + interest.focusOffset.x * correctionInfluence + driftX,
-      y: pathPoint.y + interest.focusOffset.y * correctionInfluence + driftY,
+      x: railAnchor.x + interest.focusOffset.x * correctionInfluence + driftX,
+      y: railAnchor.y + interest.focusOffset.y * correctionInfluence + driftY,
     },
     scale: clamp(baseScale * interest.zoomGovernor * audioZoomFactor, 0.02, 3.2),
     rotation: rotationTarget,
@@ -1408,9 +1629,11 @@ function updateTraversal(deltaSeconds: number, now: number) {
 
   // The desired camera can move more assertively while the rendered camera eases after it.
   // That extra inertial layer is what makes the flight read as intentional instead of reactive.
-  const centerResponse = 1.7 + audio.zoom * 0.18;
-  const scaleResponse = 1.9 + audio.zoom * 0.22;
-  const rotationResponse = 1.75 + Math.abs(curvatureBank) * 2.8;
+  const centerLag = distance(traversal.camera.center, traversal.desiredCamera.center) / Math.max(baseScale, 0.000001);
+  const scaleLag = Math.abs(Math.log(Math.max(traversal.camera.scale, 0.000001) / Math.max(traversal.desiredCamera.scale, 0.000001)));
+  const centerResponse = 1.15 + clamp(centerLag, 0, 0.8) * 0.65 + traversal.segmentEscape * 0.45;
+  const scaleResponse = 1.28 + scaleLag * 1.08 + traversal.segmentEscape * 0.32;
+  const rotationResponse = 1.32 + Math.abs(curvatureBank) * 3.2;
 
   traversal.camera = {
     center: {
@@ -1515,7 +1738,7 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.scale, traversal.camera.scale);
   gl.uniform1f(fractalUniforms.rotation, traversal.camera.rotation);
   gl.uniform1f(fractalUniforms.aspect, currentAspectRatio);
-  gl.uniform1f(fractalUniforms.palettePhase, (traversal.palettePhase + family.guidePoints[traversal.currentIndex].hueOffset) % 1);
+  gl.uniform1f(fractalUniforms.palettePhase, (traversal.palettePhase + family.pointsOfInterest[traversal.currentIndex].hueOffset) % 1);
   gl.uniform1f(fractalUniforms.ambientLift, 0.07 + audio.ambient * 0.08);
   gl.uniform1f(fractalUniforms.paletteEnergy, 0.14 + audio.palette * 0.14);
   gl.uniform1f(fractalUniforms.stableAA, stableAA);
