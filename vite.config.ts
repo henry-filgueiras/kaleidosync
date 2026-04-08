@@ -61,8 +61,17 @@ export default defineConfig(async ({ command }) => {
     ...(baseConfig.optimizeDeps?.include || []).filter(dep => dep !== "phone"),
     "dayjs",
     "dayjs/locale/en",
-    "dayjs/esm/locale/en"
+    "dayjs/esm/locale/en",
+    "music-metadata",
+    "socket.io-client",
+    "engine.io-client",
+    "socket.io-parser",
+    "debug",
+    "content-type",
+    "media-typer",
+    "ieee754"
   ];
+  const needsInterop = [...(baseConfig.optimizeDeps?.needsInterop || []), "debug", "content-type", "media-typer", "ieee754"];
 
   return {
     ...baseConfig,
@@ -74,7 +83,8 @@ export default defineConfig(async ({ command }) => {
     },
     optimizeDeps: {
       ...baseConfig.optimizeDeps,
-      include: [...new Set(include)]
+      include: [...new Set(include)],
+      needsInterop: [...new Set(needsInterop)]
     }
   };
 });
