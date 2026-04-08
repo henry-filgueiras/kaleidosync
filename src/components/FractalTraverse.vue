@@ -42,6 +42,10 @@ uniform float uAmbientLift;
 uniform float uPaletteEnergy;
 uniform float uStableAA;
 uniform int uMaxIterations;
+uniform float uStructurePower;
+uniform float uTrapMix;
+uniform float uTrapScale;
+uniform float uPaletteBias;
 
 const int MAX_ITERATIONS = 768;
 const float TAU = 6.28318530718;
@@ -52,24 +56,42 @@ struct FractalSample {
   float trap;
 };
 
-FractalSample sampleMandelbrot(vec2 c) {
+vec2 complexPowReal(vec2 z, float power) {
+  float radiusSquared = dot(z, z);
+
+  if (radiusSquared < 0.00000001) {
+    return vec2(0.0);
+  }
+
+  float radius = sqrt(radiusSquared);
+  float angle = atan(z.y, z.x);
+  float poweredRadius = pow(radius, power);
+  float poweredAngle = angle * power;
+  return vec2(cos(poweredAngle), sin(poweredAngle)) * poweredRadius;
+}
+
+FractalSample sampleMutatingMandelbrot(vec2 c) {
   vec2 z = vec2(0.0);
   float trap = 1000000.0;
   float smoothValue = float(uMaxIterations);
   float escaped = 0.0;
+  float structurePower = max(uStructurePower, 1.01);
 
   for (int i = 0; i < MAX_ITERATIONS; i++) {
     if (i >= uMaxIterations) {
       break;
     }
 
-    z = vec2(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y);
+    z = complexPowReal(z, structurePower) + c;
     float radiusSquared = dot(z, z);
-    trap = min(trap, min(abs(z.x * z.y), abs(z.x) + abs(z.y) * 0.35));
+    float crossTrap = abs(z.x * z.y) * mix(1.08, 0.84, uTrapMix);
+    float stripeTrap = abs(z.x) + abs(z.y) * mix(0.24, 0.58, uTrapMix);
+    float ringTrap = abs(length(z) - (0.38 + uTrapMix * 0.42));
+    trap = min(trap, min(mix(crossTrap, stripeTrap, uTrapMix), ringTrap * (0.84 + uTrapMix * 0.36)) * uTrapScale);
 
     if (radiusSquared > 16.0) {
       float radius = sqrt(radiusSquared);
-      smoothValue = float(i) + 1.0 - log2(max(log2(max(radius, 4.0)), 0.0001));
+      smoothValue = float(i) + 1.0 - log(max(log(max(radius, 1.0001)), 0.0001)) / log(structurePower);
       escaped = 1.0;
       break;
     }
@@ -84,18 +106,18 @@ FractalSample sampleMandelbrot(vec2 c) {
 
 vec3 colorize(FractalSample sample, vec2 uv) {
   float normalized = clamp(sample.smoothValue / float(uMaxIterations), 0.0, 1.0);
-  float trapGlow = exp(-sample.trap * (8.8 - uPaletteEnergy * 2.2));
-  float paletteT = uPalettePhase + normalized * 0.86 + trapGlow * 0.18;
+  float trapGlow = exp(-sample.trap * (8.2 - uPaletteEnergy * 1.9));
+  float paletteT = uPalettePhase + uPaletteBias + normalized * (0.84 + uTrapMix * 0.06) + trapGlow * (0.14 + uTrapMix * 0.06);
   vec3 wave = 0.5 + 0.5 * cos(TAU * (paletteT + vec3(0.02, 0.22, 0.47)));
   float vignette = clamp(1.08 - dot(uv, uv) * 1.42, 0.68, 1.08);
 
   if (sample.escaped < 0.5) {
-    float interior = (0.02 + trapGlow * 0.14 + uAmbientLift * 0.82) * vignette;
+    float interior = (0.02 + trapGlow * (0.12 + uTrapMix * 0.06) + uAmbientLift * 0.82) * vignette;
     return pow(vec3(interior * 0.11, interior * 0.16, interior * 0.27), vec3(0.96));
   }
 
   float boundary = pow(normalized, 1.18);
-  float shimmer = 0.16 + uPaletteEnergy + trapGlow * 0.36;
+  float shimmer = 0.16 + uPaletteEnergy + trapGlow * (0.28 + uTrapMix * 0.14);
   float brightness = (uAmbientLift + boundary * 0.68 + shimmer) * vignette;
   vec3 color = vec3(0.1 + wave.r * 0.9, 0.08 + wave.g * 0.72, 0.18 + wave.b * 0.96) * brightness;
   return pow(color, vec3(0.94));
@@ -113,7 +135,7 @@ FractalSample sampleAtFrag(vec2 fragCoord, out vec2 paletteUv) {
     centered.x * sinRotation + centered.y * cosRotation
   ) * uScale;
 
-  return sampleMandelbrot(uCenter + rotated);
+  return sampleMutatingMandelbrot(uCenter + rotated);
 }
 
 vec3 shadeAtFrag(vec2 fragCoord) {
@@ -292,7 +314,13 @@ type FractalFamily = {
   getPoiIndexById: (id: string) => number;
   getStartViewport: () => FractalViewport;
   getMaxIterations: (scale: number, qualityBias?: number) => number;
-  sample: (pointX: number, pointY: number, maxIterations: number, out: MutableFractalSample) => void;
+  sample: (
+    pointX: number,
+    pointY: number,
+    maxIterations: number,
+    out: MutableFractalSample,
+    parameters?: FractalParameters
+  ) => void;
 };
 
 type AudioResponseState = {
@@ -357,6 +385,31 @@ type InterestState = {
   lastEvaluationAt: number;
 };
 
+type FractalParameters = {
+  power: number;
+  trapMix: number;
+  trapScale: number;
+  paletteBias: number;
+};
+
+type FractalPreset = FractalParameters & {
+  id: string;
+  intensity: number;
+};
+
+type FractalMutationState = {
+  anchorPresetIndex: number;
+  variantPresetIndex: number;
+  recentVariantIndices: number[];
+  cyclePhase: number;
+  restTimeRemaining: number;
+  desiredDepth: number;
+  depth: number;
+  desiredSpeed: number;
+  speed: number;
+  parameters: FractalParameters;
+};
+
 type FractalUniforms = {
   resolution: WebGLUniformLocation | null;
   center: WebGLUniformLocation | null;
@@ -368,6 +421,10 @@ type FractalUniforms = {
   paletteEnergy: WebGLUniformLocation | null;
   stableAA: WebGLUniformLocation | null;
   maxIterations: WebGLUniformLocation | null;
+  structurePower: WebGLUniformLocation | null;
+  trapMix: WebGLUniformLocation | null;
+  trapScale: WebGLUniformLocation | null;
+  paletteBias: WebGLUniformLocation | null;
 };
 
 type CompositeUniforms = {
@@ -415,6 +472,7 @@ type RenderState = {
   dpr: number;
   lastCamera: FractalViewport | null;
   historyCamera: FractalViewport | null;
+  historyFractalParameters: FractalParameters | null;
   motion: number;
   refinement: number;
 };
@@ -503,6 +561,24 @@ function copyViewport(camera: FractalViewport): FractalViewport {
   };
 }
 
+function copyFractalParameters(parameters: FractalParameters): FractalParameters {
+  return {
+    power: parameters.power,
+    trapMix: parameters.trapMix,
+    trapScale: parameters.trapScale,
+    paletteBias: parameters.paletteBias,
+  };
+}
+
+function lerpFractalParameters(from: FractalParameters, to: FractalParameters, amount: number): FractalParameters {
+  return {
+    power: lerp(from.power, to.power, amount),
+    trapMix: lerp(from.trapMix, to.trapMix, amount),
+    trapScale: lerp(from.trapScale, to.trapScale, amount),
+    paletteBias: lerp(from.paletteBias, to.paletteBias, amount),
+  };
+}
+
 function createRenderTargetState(): RenderTarget {
   return {
     framebuffer: null,
@@ -511,6 +587,42 @@ function createRenderTargetState(): RenderTarget {
     height: 0,
   };
 }
+
+// Anchor preset plus a few curated variants so v1 mutation stays cinematic instead of chaotic.
+const FRACTAL_PRESETS: FractalPreset[] = [
+  {
+    id: "anchor",
+    power: 2,
+    trapMix: 0.28,
+    trapScale: 1,
+    paletteBias: 0,
+    intensity: 0,
+  },
+  {
+    id: "petal",
+    power: 2.22,
+    trapMix: 0.44,
+    trapScale: 0.94,
+    paletteBias: 0.035,
+    intensity: 0.34,
+  },
+  {
+    id: "flare",
+    power: 2.56,
+    trapMix: 0.62,
+    trapScale: 0.88,
+    paletteBias: 0.08,
+    intensity: 0.62,
+  },
+  {
+    id: "crown",
+    power: 2.94,
+    trapMix: 0.82,
+    trapScale: 0.8,
+    paletteBias: 0.14,
+    intensity: 0.9,
+  },
+];
 
 function createMandelbrotFamily(): FractalFamily {
   // The traversal now rides a small hand-picked POI network. Local scanning can
@@ -649,7 +761,10 @@ function createMandelbrotFamily(): FractalFamily {
       const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(scale, 0.000001)));
       return clamp(Math.round(170 + zoomDepth * 92 + qualityBias * 72), 170, 720);
     },
-    sample(pointX: number, pointY: number, maxIterations: number, out: MutableFractalSample) {
+    sample(pointX: number, pointY: number, maxIterations: number, out: MutableFractalSample, parameters?: FractalParameters) {
+      const structurePower = Math.max(parameters?.power ?? 2, 1.01);
+      const trapMix = clamp(parameters?.trapMix ?? 0.28, 0, 1);
+      const trapScale = Math.max(parameters?.trapScale ?? 1, 0.0001);
       let zx = 0;
       let zy = 0;
       let zxSquared = 0;
@@ -658,11 +773,27 @@ function createMandelbrotFamily(): FractalFamily {
       let iteration = 0;
 
       for (; iteration < maxIterations && zxSquared + zySquared <= 16; iteration++) {
-        zy = 2 * zx * zy + pointY;
-        zx = zxSquared - zySquared + pointX;
+        const radiusSquared = zxSquared + zySquared;
+        let nextX = 0;
+        let nextY = 0;
+
+        if (radiusSquared > 0.00000001) {
+          const radius = Math.sqrt(radiusSquared);
+          const angle = Math.atan2(zy, zx);
+          const poweredRadius = Math.pow(radius, structurePower);
+          const poweredAngle = angle * structurePower;
+          nextX = Math.cos(poweredAngle) * poweredRadius;
+          nextY = Math.sin(poweredAngle) * poweredRadius;
+        }
+
+        zy = nextY + pointY;
+        zx = nextX + pointX;
         zxSquared = zx * zx;
         zySquared = zy * zy;
-        trap = Math.min(trap, Math.abs(zx * zy), Math.abs(zx) + Math.abs(zy) * 0.35);
+        const crossTrap = Math.abs(zx * zy) * lerp(1.08, 0.84, trapMix);
+        const stripeTrap = Math.abs(zx) + Math.abs(zy) * lerp(0.24, 0.58, trapMix);
+        const ringTrap = Math.abs(Math.hypot(zx, zy) - (0.38 + trapMix * 0.42));
+        trap = Math.min(trap, Math.min(lerp(crossTrap, stripeTrap, trapMix), ringTrap * (0.84 + trapMix * 0.36)) * trapScale);
       }
 
       if (iteration >= maxIterations) {
@@ -674,7 +805,7 @@ function createMandelbrotFamily(): FractalFamily {
 
       const radius = Math.sqrt(zxSquared + zySquared);
       out.escaped = true;
-      out.smooth = iteration + 1 - Math.log2(Math.log2(Math.max(radius, 4)));
+      out.smooth = iteration + 1 - Math.log(Math.max(Math.log(Math.max(radius, 1.0001)), 0.0001)) / Math.log(structurePower);
       out.trap = trap;
     },
   };
@@ -741,6 +872,21 @@ function createInterestState(): InterestState {
   };
 }
 
+function createFractalMutationState(): FractalMutationState {
+  return {
+    anchorPresetIndex: 0,
+    variantPresetIndex: 1,
+    recentVariantIndices: [1],
+    cyclePhase: 0,
+    restTimeRemaining: 0.18,
+    desiredDepth: 0.22,
+    depth: 0.22,
+    desiredSpeed: 0.2,
+    speed: 0.2,
+    parameters: copyFractalParameters(FRACTAL_PRESETS[0]),
+  };
+}
+
 const family = createMandelbrotFamily();
 const renderState: RenderState = {
   canvas: null,
@@ -761,6 +907,7 @@ const renderState: RenderState = {
   dpr: 1,
   lastCamera: null,
   historyCamera: null,
+  historyFractalParameters: null,
   motion: 0,
   refinement: 0,
 };
@@ -768,6 +915,7 @@ const renderState: RenderState = {
 const audio = createAudioState();
 const traversal = createTraversalState(family);
 const interest = createInterestState();
+const fractalMutation = createFractalMutationState();
 const reusableInterestSample: MutableFractalSample = {
   escaped: false,
   smooth: 0,
@@ -798,6 +946,7 @@ function calculateSegmentDuration(from: FractalPoi, to: FractalPoi) {
 function resetTemporalState() {
   renderState.lastCamera = null;
   renderState.historyCamera = null;
+  renderState.historyFractalParameters = null;
   renderState.historyValid = false;
   renderState.historyReadIndex = 0;
   renderState.motion = 0;
@@ -837,6 +986,19 @@ function resetInterestState() {
   interest.lowInterestTime = 0;
   interest.searchPhase = 0.23;
   interest.lastEvaluationAt = 0;
+}
+
+function resetFractalMutationState() {
+  fractalMutation.anchorPresetIndex = 0;
+  fractalMutation.variantPresetIndex = 1;
+  fractalMutation.recentVariantIndices = [1];
+  fractalMutation.cyclePhase = 0;
+  fractalMutation.restTimeRemaining = 0.18;
+  fractalMutation.desiredDepth = 0.22;
+  fractalMutation.depth = 0.22;
+  fractalMutation.desiredSpeed = 0.2;
+  fractalMutation.speed = 0.2;
+  fractalMutation.parameters = copyFractalParameters(FRACTAL_PRESETS[0]);
 }
 
 function resetTraversalState() {
@@ -1098,6 +1260,10 @@ function ensureRenderer() {
     paletteEnergy: context.getUniformLocation(fractalProgram, "uPaletteEnergy"),
     stableAA: context.getUniformLocation(fractalProgram, "uStableAA"),
     maxIterations: context.getUniformLocation(fractalProgram, "uMaxIterations"),
+    structurePower: context.getUniformLocation(fractalProgram, "uStructurePower"),
+    trapMix: context.getUniformLocation(fractalProgram, "uTrapMix"),
+    trapScale: context.getUniformLocation(fractalProgram, "uTrapScale"),
+    paletteBias: context.getUniformLocation(fractalProgram, "uPaletteBias"),
   };
   renderState.compositeUniforms = {
     currentTexture: context.getUniformLocation(compositeProgram, "uCurrentTexture"),
@@ -1164,7 +1330,7 @@ function evaluateInterest(center: ComplexPoint, scale: number, aspectRatio: numb
       const columnT = column / (columns - 1);
       const offsetX = (columnT - 0.5) * spanX;
 
-      family.sample(center.x + offsetX, center.y + offsetY, iterations, reusableInterestSample);
+      family.sample(center.x + offsetX, center.y + offsetY, iterations, reusableInterestSample, fractalMutation.parameters);
 
       const normalized = clamp(reusableInterestSample.smooth / iterations, 0, 1);
       const trapGlow = Math.exp(-reusableInterestSample.trap * 5.2);
@@ -1367,6 +1533,61 @@ function scanNearbyInterest(
   }
 
   return { base, best };
+}
+
+function pickNextFractalVariant(previousIndex: number) {
+  const targetIntensity = clamp(0.22 + audio.noveltySmoothed * 0.74 + audio.surge * 0.64, 0.22, 0.94);
+  let bestIndex = 1;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (let index = 1; index < FRACTAL_PRESETS.length; index++) {
+    const preset = FRACTAL_PRESETS[index];
+    const revisitIndex = fractalMutation.recentVariantIndices.lastIndexOf(index);
+    const revisitPenalty =
+      revisitIndex >= 0 ? clamp(0.22 - (fractalMutation.recentVariantIndices.length - 1 - revisitIndex) * 0.08, 0.06, 0.22) : 0;
+    const repeatPenalty = index === previousIndex ? 0.12 : 0;
+    const intensityFit = 1 - Math.abs(preset.intensity - targetIntensity);
+    const wobble = Math.sin((traversal.segmentSeed + index * 0.71) * 1.37) * 0.03;
+    const score = intensityFit * 1.18 - revisitPenalty - repeatPenalty + wobble;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
+}
+
+function updateFractalMutation(deltaSeconds: number) {
+  const mutationExcitement = clamp(audio.noveltySmoothed * 0.92 + audio.surge * 1.2, 0, 1);
+  const ambientDepth = 0.18 + audio.ambient * 0.08;
+
+  // Mutation stays alive during quiet sections, then leans deeper and faster on stronger novelty.
+  fractalMutation.desiredDepth = clamp(ambientDepth + mutationExcitement * 0.34, 0.18, 0.74);
+  fractalMutation.desiredSpeed = clamp(0.19 + audio.ambient * 0.06 + mutationExcitement * 0.34, 0.18, 0.62);
+
+  fractalMutation.depth = damp(fractalMutation.depth, fractalMutation.desiredDepth, 1.1, deltaSeconds);
+  fractalMutation.speed = damp(fractalMutation.speed, fractalMutation.desiredSpeed, 1.6, deltaSeconds);
+
+  if (fractalMutation.restTimeRemaining > 0) {
+    fractalMutation.restTimeRemaining = Math.max(0, fractalMutation.restTimeRemaining - deltaSeconds);
+  } else {
+    fractalMutation.cyclePhase += deltaSeconds * fractalMutation.speed;
+
+    if (fractalMutation.cyclePhase >= Math.PI * 2) {
+      fractalMutation.cyclePhase -= Math.PI * 2;
+      fractalMutation.restTimeRemaining = clamp(0.34 - mutationExcitement * 0.18, 0.12, 0.34);
+      fractalMutation.variantPresetIndex = pickNextFractalVariant(fractalMutation.variantPresetIndex);
+      fractalMutation.recentVariantIndices = [...fractalMutation.recentVariantIndices, fractalMutation.variantPresetIndex].slice(-3);
+    }
+  }
+
+  const anchorPreset = FRACTAL_PRESETS[fractalMutation.anchorPresetIndex];
+  const variantPreset = FRACTAL_PRESETS[fractalMutation.variantPresetIndex];
+  const cycleEnvelope = fractalMutation.restTimeRemaining > 0 ? 0 : 0.5 - 0.5 * Math.cos(fractalMutation.cyclePhase);
+  const morphAmount = smoothStep(cycleEnvelope) * fractalMutation.depth;
+  fractalMutation.parameters = lerpFractalParameters(anchorPreset, variantPreset, morphAmount);
 }
 
 function updateInterestGuidance(
@@ -1693,6 +1914,7 @@ function renderFractal(deltaSeconds: number) {
   const aspectRatio = renderState.displayWidth / Math.max(renderState.displayHeight, 1);
   const zoomDepth = Math.max(0, Math.log2(2.35 / Math.max(traversal.camera.scale, 0.000001)));
   const dprBias = Math.max(0, Math.sqrt(renderState.dpr) - 1);
+  const structuralBias = (fractalMutation.parameters.power - 2) * 0.18 + fractalMutation.parameters.trapMix * 0.05;
   const centerMotion = renderState.lastCamera
     ? distance(renderState.lastCamera.center, traversal.camera.center) / Math.max(traversal.camera.scale, 0.000001)
     : 0;
@@ -1727,7 +1949,7 @@ function renderFractal(deltaSeconds: number) {
   const stableAA = clamp(quality.stableAA * (0.42 + stabilityTarget * 0.58), 0, 1);
   const maxIterations = family.getMaxIterations(
     traversal.camera.scale,
-    clamp(quality.iterationBias + dprBias + zoomDepth * 0.08, -0.2, 1.6)
+    clamp(quality.iterationBias + dprBias + zoomDepth * 0.08 + structuralBias, -0.2, 1.6)
   );
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, renderState.currentTarget.framebuffer);
@@ -1743,13 +1965,23 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.paletteEnergy, 0.14 + audio.palette * 0.14);
   gl.uniform1f(fractalUniforms.stableAA, stableAA);
   gl.uniform1i(fractalUniforms.maxIterations, maxIterations);
+  gl.uniform1f(fractalUniforms.structurePower, fractalMutation.parameters.power);
+  gl.uniform1f(fractalUniforms.trapMix, fractalMutation.parameters.trapMix);
+  gl.uniform1f(fractalUniforms.trapScale, fractalMutation.parameters.trapScale);
+  gl.uniform1f(fractalUniforms.paletteBias, fractalMutation.parameters.paletteBias);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   const historyReadTarget = renderState.historyTargets[renderState.historyReadIndex];
   const historyWriteIndex = 1 - renderState.historyReadIndex;
   const historyWriteTarget = renderState.historyTargets[historyWriteIndex];
   const historyCamera = renderState.historyCamera ?? traversal.camera;
-  const motionHistoryBlend = clamp(0.78 - renderState.motion * 10.5, 0, 0.78);
+  const historyParameters = renderState.historyFractalParameters ?? fractalMutation.parameters;
+  const mutationHistoryDelta =
+    Math.abs(fractalMutation.parameters.power - historyParameters.power) * 0.32 +
+    Math.abs(fractalMutation.parameters.trapMix - historyParameters.trapMix) * 0.22 +
+    Math.abs(fractalMutation.parameters.trapScale - historyParameters.trapScale) * 0.18 +
+    Math.abs(fractalMutation.parameters.paletteBias - historyParameters.paletteBias) * 0.48;
+  const motionHistoryBlend = clamp(0.78 - renderState.motion * 10.5 - mutationHistoryDelta, 0, 0.78);
   const historyBlend =
     renderState.historyValid && motionHistoryBlend > 0
       ? clamp(motionHistoryBlend + (1 - quality.renderScale) * 0.18, 0, 0.82)
@@ -1788,6 +2020,7 @@ function renderFractal(deltaSeconds: number) {
   renderState.historyReadIndex = historyWriteIndex;
   renderState.historyValid = true;
   renderState.historyCamera = copyViewport(traversal.camera);
+  renderState.historyFractalParameters = copyFractalParameters(fractalMutation.parameters);
   renderState.lastCamera = copyViewport(traversal.camera);
 }
 
@@ -1809,6 +2042,7 @@ function animate(now: number) {
   lastFrameTime = now;
 
   updateAudioResponse(deltaSeconds);
+  updateFractalMutation(deltaSeconds);
   updateTraversal(deltaSeconds, now);
 
   if (now - lastRenderTime < renderIntervalMs) return;
@@ -1823,6 +2057,7 @@ watch(
     if (!isVisible) {
       resetAudioState();
       resetInterestState();
+      resetFractalMutationState();
       lastFrameTime = 0;
       return;
     }
@@ -1830,6 +2065,7 @@ watch(
     resetTraversalState();
     resetInterestState();
     resetAudioState();
+    resetFractalMutationState();
     lastFrameTime = 0;
     lastRenderTime = 0;
   },
@@ -1867,6 +2103,8 @@ watch(
     if (!visible.value) return;
     resetAudioState();
     resetInterestState();
+    resetFractalMutationState();
+    resetTemporalState();
     lastFrameTime = 0;
   }
 );
