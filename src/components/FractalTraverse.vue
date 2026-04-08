@@ -85,6 +85,14 @@ struct CoinProjection {
   float discMask;
   float edgeFacing;
   float frontFacing;
+  float bodyMask;
+  float sideMask;
+  vec2 surfaceUv;
+  float surfaceRadius;
+  float surfaceEdgeFacing;
+  float surfaceFrontFacing;
+  float sideHeight;
+  float thickness;
 };
 
 vec2 complexPowReal(vec2 z, float power) {
@@ -163,6 +171,10 @@ vec3 applyCoinRotation(vec3 point) {
 
 float positiveMod(float value, float modulus) {
   return mod(mod(value, modulus) + modulus, modulus);
+}
+
+float coinHalfThickness() {
+  return max(uCoinRadius * 0.15, 0.0001);
 }
 
 vec2 discUvFromFrag(vec2 fragCoord) {
@@ -465,6 +477,14 @@ CoinProjection projectCoinDisc(vec2 fragCoord) {
   projection.discMask = 0.0;
   projection.edgeFacing = 0.0;
   projection.frontFacing = 1.0;
+  projection.bodyMask = 0.0;
+  projection.sideMask = 0.0;
+  projection.surfaceUv = vec2(0.0);
+  projection.surfaceRadius = 10.0;
+  projection.surfaceEdgeFacing = 0.0;
+  projection.surfaceFrontFacing = 1.0;
+  projection.sideHeight = 0.0;
+  projection.thickness = coinHalfThickness() / max(uCoinRadius, 0.0001);
 
   vec2 screen = (fragCoord - uResolution * 0.5) / max(uResolution.y, 0.0001);
   float cameraDistance = 2.35;
@@ -475,32 +495,122 @@ CoinProjection projectCoinDisc(vec2 fragCoord) {
   vec3 bitangent = applyCoinRotation(vec3(0.0, 1.0, 0.0));
   vec3 normal = applyCoinRotation(vec3(0.0, 0.0, 1.0));
   vec3 planeCenter = vec3(uCoinOffset, -uCoinDepth);
+  float coinRadius = max(uCoinRadius, 0.0001);
+  float halfThickness = coinHalfThickness();
   float denominator = dot(rayDirection, normal);
+  vec3 localOrigin = vec3(
+    dot(rayOrigin - planeCenter, tangent),
+    dot(rayOrigin - planeCenter, bitangent),
+    dot(rayOrigin - planeCenter, normal)
+  );
+  vec3 localDirection = vec3(
+    dot(rayDirection, tangent),
+    dot(rayDirection, bitangent),
+    dot(rayDirection, normal)
+  );
 
-  if (abs(denominator) < 0.0001) {
-    return projection;
+  if (abs(denominator) >= 0.0001) {
+    float rayDistance = dot(planeCenter - rayOrigin, normal) / denominator;
+
+    if (rayDistance > 0.0) {
+      vec3 hit = rayOrigin + rayDirection * rayDistance;
+      vec3 relative = hit - planeCenter;
+      vec2 discUv = vec2(dot(relative, tangent), dot(relative, bitangent)) / coinRadius;
+      vec3 viewDirection = normalize(rayOrigin - hit);
+      float facing = clamp(abs(dot(normal, viewDirection)), 0.0, 1.0);
+      float edgeFacing = 1.0 - facing;
+      float edgeSoftness = mix(0.018, 0.045, edgeFacing);
+
+      projection.discUv = discUv;
+      projection.radius = length(discUv);
+      projection.valid = 1.0;
+      projection.discMask = 1.0 - smoothstep(1.0 - edgeSoftness, 1.0 + edgeSoftness, projection.radius);
+      projection.edgeFacing = edgeFacing;
+      projection.frontFacing = step(0.0, dot(normal, viewDirection));
+    }
   }
 
-  float rayDistance = dot(planeCenter - rayOrigin, normal) / denominator;
+  float bestDistance = 1000000.0;
+  vec3 bestLocal = vec3(0.0);
+  vec3 bestWorldNormal = normal;
+  float bestSideMask = 0.0;
 
-  if (rayDistance <= 0.0) {
-    return projection;
+  if (abs(localDirection.z) >= 0.0001) {
+    float frontCapDistance = (halfThickness - localOrigin.z) / localDirection.z;
+
+    if (frontCapDistance > 0.0) {
+      vec3 frontLocal = localOrigin + localDirection * frontCapDistance;
+
+      if (dot(frontLocal.xy, frontLocal.xy) <= coinRadius * coinRadius && frontCapDistance < bestDistance) {
+        bestDistance = frontCapDistance;
+        bestLocal = frontLocal;
+        bestWorldNormal = normal;
+        bestSideMask = 0.0;
+      }
+    }
+
+    float backCapDistance = (-halfThickness - localOrigin.z) / localDirection.z;
+
+    if (backCapDistance > 0.0) {
+      vec3 backLocal = localOrigin + localDirection * backCapDistance;
+
+      if (dot(backLocal.xy, backLocal.xy) <= coinRadius * coinRadius && backCapDistance < bestDistance) {
+        bestDistance = backCapDistance;
+        bestLocal = backLocal;
+        bestWorldNormal = -normal;
+        bestSideMask = 0.0;
+      }
+    }
   }
 
-  vec3 hit = rayOrigin + rayDirection * rayDistance;
-  vec3 relative = hit - planeCenter;
-  vec2 discUv = vec2(dot(relative, tangent), dot(relative, bitangent)) / max(uCoinRadius, 0.0001);
-  vec3 viewDirection = normalize(rayOrigin - hit);
-  float facing = clamp(abs(dot(normal, viewDirection)), 0.0, 1.0);
-  float edgeFacing = 1.0 - facing;
-  float edgeSoftness = mix(0.018, 0.045, edgeFacing);
+  float cylinderA = dot(localDirection.xy, localDirection.xy);
 
-  projection.discUv = discUv;
-  projection.radius = length(discUv);
-  projection.valid = 1.0;
-  projection.discMask = 1.0 - smoothstep(1.0 - edgeSoftness, 1.0 + edgeSoftness, projection.radius);
-  projection.edgeFacing = edgeFacing;
-  projection.frontFacing = step(0.0, dot(normal, viewDirection));
+  if (cylinderA > 0.000001) {
+    float cylinderB = 2.0 * dot(localOrigin.xy, localDirection.xy);
+    float cylinderC = dot(localOrigin.xy, localOrigin.xy) - coinRadius * coinRadius;
+    float cylinderDiscriminant = cylinderB * cylinderB - 4.0 * cylinderA * cylinderC;
+
+    if (cylinderDiscriminant >= 0.0) {
+      float sqrtDiscriminant = sqrt(cylinderDiscriminant);
+      float sideDistanceA = (-cylinderB - sqrtDiscriminant) / (2.0 * cylinderA);
+      float sideDistanceB = (-cylinderB + sqrtDiscriminant) / (2.0 * cylinderA);
+
+      if (sideDistanceA > 0.0) {
+        vec3 sideLocalA = localOrigin + localDirection * sideDistanceA;
+
+        if (abs(sideLocalA.z) <= halfThickness && sideDistanceA < bestDistance) {
+          bestDistance = sideDistanceA;
+          bestLocal = sideLocalA;
+          bestWorldNormal = normalize(tangent * (sideLocalA.x / coinRadius) + bitangent * (sideLocalA.y / coinRadius));
+          bestSideMask = 1.0;
+        }
+      }
+
+      if (sideDistanceB > 0.0) {
+        vec3 sideLocalB = localOrigin + localDirection * sideDistanceB;
+
+        if (abs(sideLocalB.z) <= halfThickness && sideDistanceB < bestDistance) {
+          bestDistance = sideDistanceB;
+          bestLocal = sideLocalB;
+          bestWorldNormal = normalize(tangent * (sideLocalB.x / coinRadius) + bitangent * (sideLocalB.y / coinRadius));
+          bestSideMask = 1.0;
+        }
+      }
+    }
+  }
+
+  if (bestDistance < 999999.0) {
+    vec3 bodyHit = rayOrigin + rayDirection * bestDistance;
+    vec3 bodyViewDirection = normalize(rayOrigin - bodyHit);
+
+    projection.bodyMask = 1.0;
+    projection.sideMask = bestSideMask;
+    projection.surfaceUv = bestLocal.xy / coinRadius;
+    projection.surfaceRadius = length(projection.surfaceUv);
+    projection.surfaceEdgeFacing = 1.0 - clamp(abs(dot(bestWorldNormal, bodyViewDirection)), 0.0, 1.0);
+    projection.surfaceFrontFacing = step(0.0, dot(bestWorldNormal, bodyViewDirection));
+    projection.sideHeight = bestSideMask > 0.5 ? bestLocal.z / halfThickness : sign(bestLocal.z);
+  }
 
   return projection;
 }
@@ -512,7 +622,7 @@ vec3 applyCoinComposition(vec3 color, CoinProjection projection) {
   float seamDistance;
   float sliceAngle;
   float slicePhase;
-  pizzaSymmetryDataFromDiscUv(projection.discUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
+  pizzaSymmetryDataFromDiscUv(projection.surfaceUv, radius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
 
   float halfSlice = max(sliceAngle * 0.5, 0.0001);
   float wedgeCoord = canonicalAngle / halfSlice;
@@ -521,29 +631,112 @@ vec3 applyCoinComposition(vec3 color, CoinProjection projection) {
   float hubMask = 1.0 - smoothstep(0.05, 0.18, radius);
   float hubRing = smoothstep(0.08, 0.12, radius) * (1.0 - smoothstep(0.15, 0.21, radius));
   float rim = smoothstep(0.82, 0.94, radius) * (1.0 - smoothstep(0.97, 1.01, radius));
-  float backFace = 1.0 - projection.frontFacing;
+  float faceBevel = smoothstep(0.72, 0.94, radius) * (1.0 - smoothstep(0.94, 1.0, radius));
+  float backFace = 1.0 - projection.surfaceFrontFacing;
   float sheenPhase = slicePhase + radius * (8.4 + uPizzaWarp * 1.8) - uPizzaMorph * 0.18 + uCoinSpin * 0.22;
   float rimSweep = 0.5 + 0.5 * cos(sheenPhase + wedgeCoord * 1.6);
-  float discGradient = 0.84 + (0.5 + 0.5 * projection.discUv.y) * 0.1 + (0.5 + 0.5 * projection.discUv.x) * 0.04;
+  float ridgePulse =
+    0.5 +
+    0.5 *
+    cos(
+      canonicalAngle * (9.0 + uSliceCount * 0.9) +
+      radius * (11.2 + uPizzaWarp * 2.2) -
+      uPizzaMorph * 0.24 +
+      slicePhase * 0.72
+    );
+  float discGradient = 0.84 + (0.5 + 0.5 * projection.surfaceUv.y) * 0.1 + (0.5 + 0.5 * projection.surfaceUv.x) * 0.04;
   float discLuma;
   vec3 background = vec3(0.005, 0.007, 0.012);
   vec3 seamColor = vec3(0.028, 0.022, 0.038) + vec3(0.08, 0.055, 0.04) * (0.18 + uPaletteEnergy * 0.12);
   vec3 rimColor =
-    vec3(0.34, 0.25, 0.18) * (0.36 + projection.edgeFacing * 0.34) +
-    vec3(0.92, 0.78, 0.58) * (0.04 + uCoinShimmer * 0.18 + rimSweep * 0.08);
-  vec3 hubGlow = vec3(0.11, 0.12, 0.16) * (0.08 + uAmbientLift * 0.12 + projection.frontFacing * 0.06);
+    vec3(0.34, 0.25, 0.18) * (0.32 + projection.surfaceEdgeFacing * 0.28 + ridgePulse * 0.08) +
+    vec3(0.92, 0.78, 0.58) * (0.04 + uCoinShimmer * 0.18 + rimSweep * 0.08 + ridgePulse * 0.06);
+  vec3 hubGlow = vec3(0.11, 0.12, 0.16) * (0.08 + uAmbientLift * 0.12 + projection.surfaceFrontFacing * 0.06);
   vec3 discColor = boostSaturation(color, 0.98 + uCoinShimmer * 0.08);
 
-  discColor *= discGradient * mix(0.82, 1.04, projection.frontFacing);
+  discColor *= discGradient * mix(0.82, 1.04, projection.surfaceFrontFacing);
   discColor *= 1.0 - seamShadow * 0.16;
-  discColor = mix(discColor, seamColor, seamGlow * (0.08 + projection.edgeFacing * 0.06));
-  discColor += rimColor * rim;
+  discColor = mix(discColor, seamColor, seamGlow * (0.08 + projection.surfaceEdgeFacing * 0.06));
+  discColor = mix(discColor, discColor * 0.72, faceBevel * (0.08 + projection.surfaceEdgeFacing * 0.1));
+  discColor += rimColor * rim * (0.9 + ridgePulse * 0.22);
   discColor = mix(discColor, background, hubMask * 0.62);
   discColor += hubGlow * hubRing;
   discLuma = dot(discColor, vec3(0.2126, 0.7152, 0.0722));
-  discColor = mix(discColor, vec3(discLuma * 0.8, discLuma * 0.84, discLuma * 0.94), backFace * (0.14 + projection.edgeFacing * 0.08));
+  discColor = mix(discColor, vec3(discLuma * 0.8, discLuma * 0.84, discLuma * 0.94), backFace * (0.14 + projection.surfaceEdgeFacing * 0.08));
 
   return discColor;
+}
+
+vec3 shadeCoinRim(CoinProjection projection) {
+  vec2 rimDirection = projection.surfaceRadius > 0.0001 ? projection.surfaceUv / projection.surfaceRadius : vec2(1.0, 0.0);
+  float sideHeight01 = projection.sideHeight * 0.5 + 0.5;
+  vec2 ridgeUv =
+    rotate2d(
+      rimDirection * (0.87 + sideHeight01 * 0.08 + projection.thickness * 0.06),
+      projection.sideHeight * 0.26 + uPizzaBackdropTorsion * 0.24
+    ) +
+    vec2(
+      sin(projection.sideHeight * (3.8 + uPizzaWarp * 1.2) + uCoinPrecession * 0.42 + rimDirection.x * 1.8),
+      cos(projection.sideHeight * (4.2 + uPizzaWarp * 1.3) - uCoinFlip * 0.18 + rimDirection.y * 2.2)
+    ) *
+    0.032;
+  float ridgeRadius;
+  float sliceIndex;
+  float canonicalAngle;
+  float seamDistance;
+  float sliceAngle;
+  float slicePhase;
+  vec2 paletteUv;
+  float paletteOffset;
+  FractalSample ridgeSample = samplePizzaField(ridgeUv, 0.0, paletteUv, paletteOffset);
+  vec3 ridgeFractal = colorize(ridgeSample, paletteUv * 0.78 + rimDirection * 0.08, paletteOffset + projection.sideHeight * 0.04);
+
+  pizzaSymmetryDataFromDiscUv(ridgeUv, ridgeRadius, sliceIndex, canonicalAngle, seamDistance, sliceAngle, slicePhase);
+
+  float ridgeBandsPrimary =
+    0.5 +
+    0.5 *
+    cos(
+      canonicalAngle * (10.0 + uSliceCount * 0.7) +
+      projection.sideHeight * (6.1 + uPizzaWarp * 2.0) +
+      slicePhase * 0.6 -
+      uPizzaMorph * 0.26
+    );
+  float ridgeBandsSecondary =
+    0.5 +
+    0.5 *
+    cos(
+      canonicalAngle * (20.0 + uSliceCount * 1.2) -
+      projection.sideHeight * (9.8 + uCoinShimmer * 2.0) +
+      ridgeBandsPrimary * 1.9 +
+      uCoinSpin * 0.24
+    );
+  float ridgeRecurrence = smoothstep(
+    0.42,
+    0.84,
+    ridgeBandsPrimary * 0.56 + ridgeBandsSecondary * 0.44 + (1.0 - seamDistance) * 0.28
+  );
+  float grooveMask = smoothstep(0.48, 0.9, ridgeBandsSecondary * 0.66 + ridgeBandsPrimary * 0.34);
+  float axialRoll =
+    0.5 +
+    0.5 *
+    cos(
+      projection.sideHeight * (7.6 + uPizzaWarp * 1.8) -
+      canonicalAngle * 2.2 +
+      uCoinPrecession * 0.22 +
+      slicePhase * 0.3
+    );
+  vec3 metalBase =
+    vec3(0.17, 0.13, 0.1) * (0.8 + projection.surfaceEdgeFacing * 0.22) +
+    vec3(0.72, 0.59, 0.44) * (0.12 + ridgeRecurrence * 0.16 + axialRoll * 0.05 + projection.thickness * 0.12);
+  vec3 ridgeColor = mix(metalBase, boostSaturation(ridgeFractal, 0.78), 0.22 + ridgeRecurrence * 0.24);
+
+  ridgeColor *= 0.48 + axialRoll * 0.22 + (1.0 - projection.surfaceEdgeFacing) * 0.28;
+  ridgeColor = mix(ridgeColor, ridgeColor * 0.58, grooveMask * (0.18 + projection.surfaceEdgeFacing * 0.14));
+  ridgeColor += vec3(0.92, 0.78, 0.58) * (0.04 + ridgeRecurrence * 0.08 + uCoinShimmer * 0.14 + axialRoll * 0.04);
+  ridgeColor = mix(ridgeColor, ridgeColor * 0.74, smoothstep(0.84, 1.0, abs(projection.sideHeight)) * 0.18);
+
+  return ridgeColor;
 }
 
 vec2 backdropDiscUvFromFrag(vec2 fragCoord) {
@@ -638,39 +831,48 @@ vec3 shadeCoinBackdropAtFrag(vec2 fragCoord) {
   return applyPizzaBackdropComposition(baseColor, backdropUv);
 }
 
-vec3 sampleCoinDiscColorAtFrag(vec2 fragCoord) {
+vec3 sampleCoinSurfaceColorAtFrag(vec2 fragCoord) {
   CoinProjection projection = projectCoinDisc(fragCoord);
 
-  if (projection.valid < 0.5 || projection.discMask <= 0.0001) {
+  if (projection.bodyMask <= 0.0001) {
     return vec3(0.004, 0.006, 0.011);
+  }
+
+  if (projection.sideMask > 0.5) {
+    return shadeCoinRim(projection);
   }
 
   vec2 paletteUv;
   float paletteOffset;
-  FractalSample sample = samplePizzaField(projection.discUv, 0.0, paletteUv, paletteOffset);
+  FractalSample sample = samplePizzaField(projection.surfaceUv, 0.0, paletteUv, paletteOffset);
   return applyCoinComposition(colorize(sample, paletteUv, paletteOffset), projection);
 }
 
 vec3 shadeCoinAtFrag(vec2 fragCoord) {
   CoinProjection projection = projectCoinDisc(fragCoord);
   vec3 color = shadeCoinBackdropAtFrag(fragCoord);
-  float coinInfluence = 1.0 - smoothstep(1.18 + projection.edgeFacing * 0.18, 1.36 + projection.edgeFacing * 0.28, projection.radius);
+  float coinInfluence =
+    max(
+      projection.bodyMask,
+      projection.valid * (1.0 - smoothstep(1.18 + projection.edgeFacing * 0.18, 1.36 + projection.edgeFacing * 0.28, projection.radius))
+    );
   float contactShadow = coinInfluence * (1.0 - smoothstep(0.92, 1.18 + projection.edgeFacing * 0.18, projection.radius));
 
-  color *= 1.0 - contactShadow * (0.05 + projection.edgeFacing * 0.05);
+  color *= 1.0 - contactShadow * (0.05 + projection.edgeFacing * 0.05 + projection.sideMask * 0.04);
 
-  if (projection.discMask > 0.0001) {
-    vec3 discColor = sampleCoinDiscColorAtFrag(fragCoord);
+  if (projection.bodyMask > 0.0001) {
+    vec3 discColor = sampleCoinSurfaceColorAtFrag(fragCoord);
 
-    if (uStableAA > 0.01) {
+    if (uStableAA > 0.01 && projection.sideMask < 0.5) {
       vec3 paired = 0.5 * (
-        sampleCoinDiscColorAtFrag(fragCoord + vec2(-0.24, 0.24)) +
-        sampleCoinDiscColorAtFrag(fragCoord + vec2(0.24, -0.24))
+        sampleCoinSurfaceColorAtFrag(fragCoord + vec2(-0.24, 0.24)) +
+        sampleCoinSurfaceColorAtFrag(fragCoord + vec2(0.24, -0.24))
       );
       discColor = mix(discColor, paired, clamp((0.16 + uStableAA * 0.2) * projection.discMask, 0.0, 0.44));
     }
 
-    color = mix(color, discColor, projection.discMask);
+    float surfaceMask = projection.sideMask > 0.5 ? 1.0 : projection.discMask;
+    color = mix(color, discColor, surfaceMask);
   }
 
   float rimSweep = 0.5 + 0.5 * cos(projection.discUv.y * 7.0 - projection.discUv.x * 4.0 + uPizzaMorph * 0.22 + uCoinSpin * 0.36);
@@ -688,8 +890,8 @@ vec3 shadeCoinAtFrag(vec2 fragCoord) {
     vec3(0.22, 0.17, 0.14) * (0.12 + projection.edgeFacing * 0.24) +
     vec3(0.88, 0.76, 0.58) * (0.02 + uCoinShimmer * 0.12);
 
-  color = mix(color, color * 0.82, edgeDarken * projection.discMask);
-  color += rimColor * innerRim * (0.08 + projection.edgeFacing * 0.18) * coinInfluence;
+  color = mix(color, color * 0.84, edgeDarken * projection.discMask * (1.0 - projection.sideMask));
+  color += rimColor * innerRim * (0.08 + projection.edgeFacing * 0.18) * coinInfluence * (1.0 - projection.sideMask * 0.7);
   color += outerGlowColor * outerRim * (0.08 + projection.edgeFacing * 0.24 + uCoinShimmer * 0.1) * coinInfluence;
 
   return color;
