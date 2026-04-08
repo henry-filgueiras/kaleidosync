@@ -74,6 +74,10 @@ uniform float uPizzaCarveStrength;
 uniform float uPizzaGrooveStrength;
 uniform float uPizzaCrustProtection;
 uniform float uPizzaValleyGlow;
+uniform vec2 uPizzaFlowOffset;
+uniform float uPizzaFlowPhase;
+uniform float uPizzaFlowStrength;
+uniform float uPizzaAudioPulse;
 uniform vec2 uLorenzPoints[${PIZZA_LORENZ_POINT_COUNT}];
 
 const int MAX_ITERATIONS = 768;
@@ -314,15 +318,24 @@ FractalSample samplePizzaTerrainFractal(vec2 discUv, out vec2 fieldUv, out float
   float escaped = 0.0;
   float radius = length(discUv);
   float innerEnvelope = 1.0 - smoothstep(0.0, 0.96, radius);
-  vec2 warpedUv = rotate2d(discUv, uRotation * 0.42 + uPizzaSpin * 0.08 + radius * radius * 0.32);
+  vec2 flowUv =
+    discUv +
+    uPizzaFlowOffset * (0.24 + innerEnvelope * 0.76) +
+    vec2(
+      sin(discUv.y * (4.4 + uPizzaFlowStrength * 1.8) + uPizzaFlowPhase * 0.92),
+      cos(discUv.x * (4.0 + uPizzaFlowStrength * 1.6) - uPizzaFlowPhase * 0.86)
+    ) *
+    (0.008 + uPizzaFlowStrength * 0.016 + uPizzaAudioPulse * 0.004) *
+    innerEnvelope;
+  vec2 warpedUv = rotate2d(flowUv, uRotation * 0.42 + uPizzaSpin * 0.08 + radius * radius * 0.32 + uPizzaFlowPhase * 0.04);
   float swirl = innerEnvelope * (0.22 + uPizzaWarp * 0.1);
   warpedUv = rotate2d(warpedUv, swirl * sin(radius * 5.4 - uPizzaMorph * 0.12));
   warpedUv +=
     vec2(
-      sin((warpedUv.y + radius * 0.22) * (4.2 + uPizzaWarp * 1.9) + uPizzaMorph * 0.16),
-      cos((warpedUv.x - radius * 0.14) * (4.8 + uPizzaWarp * 1.6) - uPizzaMorph * 0.12)
+      sin((warpedUv.y + radius * 0.22) * (4.2 + uPizzaWarp * 1.9 + uPizzaFlowStrength * 1.2) + uPizzaMorph * 0.16 + uPizzaFlowPhase * 0.44),
+      cos((warpedUv.x - radius * 0.14) * (4.8 + uPizzaWarp * 1.6 + uPizzaFlowStrength) - uPizzaMorph * 0.12 - uPizzaFlowPhase * 0.38)
     ) *
-    (0.018 + uPizzaWarp * 0.018) *
+    (0.018 + uPizzaWarp * 0.018 + uPizzaFlowStrength * 0.014) *
     (0.86 - radius * 0.24);
   fieldUv = warpedUv;
   if (terrainIterations < 1) {
@@ -399,17 +412,17 @@ PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
   FractalSample sample = samplePizzaTerrainFractal(discUv, fieldUv, iterationCount);
   float normalized = clamp(sample.smoothValue / max(iterationCount, 1.0), 0.0, 1.0);
   float trapGlow = exp(-sample.trap * (4.6 - uPaletteEnergy * 0.5));
-  float contour = 0.5 + 0.5 * cos(normalized * (12.4 + trapGlow * 2.8) + trapGlow * 5.1);
-  float broadFold = 0.5 + 0.5 * cos(fieldUv.x * 3.1 - fieldUv.y * 2.4 + uPizzaMorph * 0.08);
-  float crossFold = 0.5 + 0.5 * sin((fieldUv.x + fieldUv.y) * 3.8 + normalized * 6.4 - uPizzaSpin * 0.08);
+  float contour = 0.5 + 0.5 * cos(normalized * (12.4 + trapGlow * 2.8) + trapGlow * 5.1 + uPizzaFlowPhase * 0.32);
+  float broadFold = 0.5 + 0.5 * cos(fieldUv.x * (3.1 + uPizzaFlowStrength * 0.72) - fieldUv.y * 2.4 + uPizzaMorph * 0.08 + uPizzaFlowPhase * 0.18);
+  float crossFold = 0.5 + 0.5 * sin((fieldUv.x + fieldUv.y) * (3.8 + uPizzaFlowStrength * 0.84) + normalized * 6.4 - uPizzaSpin * 0.08 - uPizzaFlowPhase * 0.26);
   float crumbNoise =
     0.5 +
     0.5 *
-    sin(fieldUv.x * 8.4 + uPizzaMorph * 0.11 + trapGlow * 4.2) *
-    cos(fieldUv.y * 7.8 - uPizzaSpin * 0.06 - normalized * 5.4);
+    sin(fieldUv.x * (8.4 + uPizzaFlowStrength * 1.8) + uPizzaMorph * 0.11 + trapGlow * 4.2 + uPizzaFlowPhase * 0.62) *
+    cos(fieldUv.y * (7.8 + uPizzaFlowStrength * 1.4) - uPizzaSpin * 0.06 - normalized * 5.4 - uPizzaFlowPhase * 0.46);
   float terraceBands =
     1.0 -
-    abs(fract(normalized * (5.4 + trapGlow * 1.5) + broadFold * 0.22 + crossFold * 0.16) * 2.0 - 1.0);
+    abs(fract(normalized * (5.4 + trapGlow * 1.5 + uPizzaFlowStrength * 0.9) + broadFold * 0.22 + crossFold * 0.16 + uPizzaAudioPulse * 0.12) * 2.0 - 1.0);
   float ridgeField =
     smoothstep(0.34, 0.92, terraceBands * 0.56 + trapGlow * 0.34 + (1.0 - normalized) * 0.24 + crumbNoise * 0.14);
   float basinField =
@@ -426,7 +439,12 @@ PizzaTerrainSample samplePizzaTerrain(vec2 discUv) {
     (0.5 + 0.5 * sin(angle * 8.0 + contour * 4.8 + trapGlow * 5.4 + uPizzaMorph * 0.18 + radius * 8.0));
   float domeHeight = 0.024 + (1.0 - radius * radius) * 0.014 * interiorMask;
   float crustLift = rimBand * (0.048 + crustBlister * 0.016);
-  float grooveDistance = lorenzCurveDistance(rotate2d(discUv * vec2(0.98, 1.05), -0.28 + uPizzaSpin * 0.02));
+  float grooveDistance = lorenzCurveDistance(
+    rotate2d(
+      (discUv + uPizzaFlowOffset * 0.22) * vec2(0.98, 1.05),
+      -0.28 + uPizzaSpin * 0.02 + uPizzaFlowPhase * 0.03
+    )
+  );
   float grooveWidth = mix(0.038, 0.018, clamp(uPizzaGrooveStrength * 0.7, 0.0, 1.0));
   float groove =
     (1.0 - smoothstep(grooveWidth, grooveWidth * 3.6, grooveDistance)) *
@@ -1581,6 +1599,11 @@ type PizzaFieldMotionState = {
   backdropLagRotation: number;
   backdropTorsion: number;
   backdropTorsionVelocity: number;
+  flowPhase: number;
+  flowOffsetX: number;
+  flowOffsetY: number;
+  flowStrength: number;
+  audioPulse: number;
   settle: number;
   lastKickSignal: number;
 };
@@ -1736,6 +1759,10 @@ type FractalUniforms = {
   pizzaGrooveStrength: WebGLUniformLocation | null;
   pizzaCrustProtection: WebGLUniformLocation | null;
   pizzaValleyGlow: WebGLUniformLocation | null;
+  pizzaFlowOffset: WebGLUniformLocation | null;
+  pizzaFlowPhase: WebGLUniformLocation | null;
+  pizzaFlowStrength: WebGLUniformLocation | null;
+  pizzaAudioPulse: WebGLUniformLocation | null;
   lorenzPoints: WebGLUniformLocation | null;
 };
 
@@ -2357,6 +2384,11 @@ function createPizzaFieldMotionState(): PizzaFieldMotionState {
     backdropLagRotation: 0,
     backdropTorsion: 0,
     backdropTorsionVelocity: 0,
+    flowPhase: 0,
+    flowOffsetX: 0,
+    flowOffsetY: 0,
+    flowStrength: 0.22,
+    audioPulse: 0,
     settle: 1,
     lastKickSignal: 0,
   };
@@ -3038,6 +3070,10 @@ function ensureRenderer() {
     pizzaGrooveStrength: context.getUniformLocation(fractalProgram, "uPizzaGrooveStrength"),
     pizzaCrustProtection: context.getUniformLocation(fractalProgram, "uPizzaCrustProtection"),
     pizzaValleyGlow: context.getUniformLocation(fractalProgram, "uPizzaValleyGlow"),
+    pizzaFlowOffset: context.getUniformLocation(fractalProgram, "uPizzaFlowOffset"),
+    pizzaFlowPhase: context.getUniformLocation(fractalProgram, "uPizzaFlowPhase"),
+    pizzaFlowStrength: context.getUniformLocation(fractalProgram, "uPizzaFlowStrength"),
+    pizzaAudioPulse: context.getUniformLocation(fractalProgram, "uPizzaAudioPulse"),
     lorenzPoints: context.getUniformLocation(fractalProgram, "uLorenzPoints[0]"),
   };
   renderState.compositeUniforms = {
@@ -3707,6 +3743,7 @@ function updateCoinMotion(deltaSeconds: number, now: number) {
 }
 
 function updatePizzaFieldMotion(deltaSeconds: number, now: number) {
+  const stream = clamp(Number(sources.stream) || 0, 0, 1);
   const pulseConfidence = pulse.confidence;
   const pulseImpact = pulse.impact * pulseConfidence;
   const pulseAnticipation = pulse.anticipation * pulseConfidence;
@@ -3805,6 +3842,72 @@ function updatePizzaFieldMotion(deltaSeconds: number, now: number) {
     pizzaFieldMotion.backdropTorsion,
     pizzaFieldMotion.backdropTorsionVelocity,
     1.34 + pizzaFieldMotion.settle * 0.24,
+    deltaSeconds
+  );
+
+  const morphDrive = clamp(
+    audio.spectralFlux * 0.42 +
+      audio.noveltySmoothed * 0.28 +
+      audio.midDrive * 0.18 +
+      audio.highDrive * 0.08 +
+      stream * 0.16 +
+      pulseImpact * 0.14 +
+      pulseAnticipation * 0.16,
+    0,
+    1.6
+  );
+  const flowRate = 0.24 + audio.ambient * 0.22 + morphDrive * 0.78 + audio.highDrive * 0.12;
+  pizzaFieldMotion.flowPhase = wrapAngle(pizzaFieldMotion.flowPhase + flowRate * deltaSeconds);
+
+  const flowOrbitX =
+    Math.sin(
+      pizzaFieldMotion.flowPhase * (0.92 + audio.midDrive * 0.08) +
+        traversal.segmentSeed * TAU * 0.34 +
+        pizzaFieldMotion.rotation * 0.24
+    );
+  const flowOrbitY =
+    Math.cos(
+      pizzaFieldMotion.flowPhase * (0.76 + audio.highDrive * 0.07) -
+        traversal.segmentSeed * TAU * 0.22 +
+        pizzaFieldMotion.backdropTorsion * 0.88
+    );
+  const flowOffsetXTarget = clamp(
+    flowOrbitX * (0.01 + morphDrive * 0.022 + audio.bend * 0.012) +
+      driftDirection * (audio.spectralFlux * 0.012 + kickAccent * 0.01) +
+      Math.sin(traversal.driftPhase + traversal.segmentSeed) * 0.008 * (0.4 + morphDrive * 0.6),
+    -0.085,
+    0.085
+  );
+  const flowOffsetYTarget = clamp(
+    flowOrbitY * (0.008 + morphDrive * 0.018 + audio.midDrive * 0.014) +
+      (audio.temperature - 0.5) * 0.022 +
+      Math.cos(traversal.bendPhase * 0.74 - traversal.segmentSeed * 0.63) * 0.007 * (0.4 + morphDrive * 0.6),
+    -0.078,
+    0.078
+  );
+
+  pizzaFieldMotion.flowOffsetX = damp(
+    pizzaFieldMotion.flowOffsetX,
+    flowOffsetXTarget,
+    1.34 + morphDrive * 1.28 + pizzaFieldMotion.settle * 0.16,
+    deltaSeconds
+  );
+  pizzaFieldMotion.flowOffsetY = damp(
+    pizzaFieldMotion.flowOffsetY,
+    flowOffsetYTarget,
+    1.28 + morphDrive * 1.18 + pizzaFieldMotion.settle * 0.16,
+    deltaSeconds
+  );
+  pizzaFieldMotion.flowStrength = damp(
+    pizzaFieldMotion.flowStrength,
+    clamp(0.2 + morphDrive * 0.88 + audio.zoom * 0.14 + kickAccent * 0.14, 0.2, 1.48),
+    1.52 + morphDrive * 1.1,
+    deltaSeconds
+  );
+  pizzaFieldMotion.audioPulse = damp(
+    pizzaFieldMotion.audioPulse,
+    clamp(pulseImpact * 0.72 + audio.bassDrive * 0.24 + kickAccent * 0.4 + stream * 0.08, 0, 1.4),
+    4.1,
     deltaSeconds
   );
 
@@ -4072,6 +4175,17 @@ function renderFractal(deltaSeconds: number) {
   const pizzaBackdropRotation =
     angleDelta(pizzaFieldMotion.backdropLagRotation, pizzaFieldMotion.rotation) * (1.12 + pizzaFieldExcitement * 0.2);
   const pizzaBackdropTorsion = pizzaFieldMotion.backdropTorsion * (1.02 + pizzaFieldExcitement * 0.28);
+  const pizzaFlowPhase = pizzaFieldMotion.flowPhase + traversal.driftPhase * 0.22 + pizzaFieldMotion.rotation * 0.18;
+  const pizzaFlowStrength = isPizzaLayout.value
+    ? clamp(
+        pizzaFieldMotion.flowStrength * (0.9 + audio.spectralFlux * 0.1 + pulseAnticipation * 0.06 + audio.midDrive * 0.04),
+        0.18,
+        1.62
+      )
+    : 0;
+  const pizzaAudioPulse = isPizzaLayout.value
+    ? clamp(pizzaFieldMotion.audioPulse * (0.94 + pulseImpact * 0.08 + audio.bassDrive * 0.04), 0, 1.5)
+    : 0;
   const coinRadius = clamp(0.78 + coinMotion.lift * 0.08 + audio.zoom * 0.02 + pulseImpact * 0.02, 0.74, 0.94);
   const coinDepth = clamp(0.98 - coinMotion.lift * 0.34 - pulseImpact * 0.06, 0.72, 1.16);
   const coinOffset = {
@@ -4165,6 +4279,10 @@ function renderFractal(deltaSeconds: number) {
   gl.uniform1f(fractalUniforms.pizzaGrooveStrength, pizzaGrooveStrength);
   gl.uniform1f(fractalUniforms.pizzaCrustProtection, pizzaCrustProtection);
   gl.uniform1f(fractalUniforms.pizzaValleyGlow, pizzaValleyGlow);
+  gl.uniform2f(fractalUniforms.pizzaFlowOffset, pizzaFieldMotion.flowOffsetX, pizzaFieldMotion.flowOffsetY);
+  gl.uniform1f(fractalUniforms.pizzaFlowPhase, pizzaFlowPhase);
+  gl.uniform1f(fractalUniforms.pizzaFlowStrength, pizzaFlowStrength);
+  gl.uniform1f(fractalUniforms.pizzaAudioPulse, pizzaAudioPulse);
   gl.uniform2fv(fractalUniforms.lorenzPoints, LORENZ_CURVE_POINTS);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
