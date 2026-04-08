@@ -671,6 +671,7 @@ const viewport = useViewport();
 const sources = useSources();
 const settings = useVisualizerSettings();
 const audioFeatures = useAudioFeatures();
+const TAU = Math.PI * 2;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -1433,6 +1434,7 @@ function updateTraversalMode(deltaSeconds: number, now: number, aspectRatio: num
       traversal.transitionRotationOffset = damp(traversal.transitionRotationOffset, 0, 2.2, deltaSeconds);
 
       const shouldTransition =
+        !isPizzaLayout.value &&
         now >= traversal.transitionCooldownUntil &&
         traversal.progress > 0.16 &&
         interest.lowInterestTime >= VOID_TRANSITION_CONFIG.triggerLowInterestTime &&
