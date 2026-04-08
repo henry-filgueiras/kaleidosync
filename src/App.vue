@@ -1,12 +1,13 @@
 <template>
-  <Root />
+  <AppRoot />
   <Renderer />
   <Toast />
   <Popover />
 </template>
 
 <script lang="ts" setup>
-import { Root, Toast, Popover } from "@wearesage/vue";
+import { Toast, Popover } from "@wearesage/vue";
+import AppRoot from "./components/AppRoot.vue";
 import Renderer from "./components/Renderer.vue";
 import { useSources } from "./stores/sources";
 

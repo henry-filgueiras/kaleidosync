@@ -13,11 +13,11 @@ import { MediaSessionManager } from "@wearesage/vue/classes/MediaSessionManager"
 import { useAudioAnalyser } from "@wearesage/vue/composables/audio/useAudioAnalyser";
 import { useAudioMetadata } from "@wearesage/vue/composables/audio/useAudioMetadata";
 import { useRadioStream } from "@wearesage/vue/composables/useRadioStream";
-import { useRouter } from "@wearesage/vue/router/sage-router";
 import { useRAF } from "@wearesage/vue/stores/raf";
 import { useSpotify } from "@wearesage/vue/stores/spotify";
 import { useToast } from "@wearesage/vue/stores/toast";
 import { clamp, easeInOut } from "@wearesage/vue/util";
+import { useRouter } from "../sage-router-pages";
 
 export const AudioSourceIcons: Record<AudioSource, string> = {
   [AudioSource.SPOTIFY]: "spotify",

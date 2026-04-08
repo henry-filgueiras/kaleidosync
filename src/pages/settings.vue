@@ -98,8 +98,9 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
-import { View, Column, Toggle, RangeInput, useRouter } from "@wearesage/vue";
+import { View, Column, Toggle, RangeInput } from "@wearesage/vue";
 import { MenuHeader } from "../components";
+import { useRouter } from "../sage-router-pages";
 import {
   type FractalTraverseLayoutMode,
   type VisualizationMode,

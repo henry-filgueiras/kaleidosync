@@ -63,6 +63,7 @@ export let extractParams = (_routePath: string, _actualPath: string): Record<str
 const currentPath = ref(normalizePathname(window.location.pathname));
 const currentQuery = ref(new URLSearchParams(window.location.search));
 const currentHash = ref(window.location.hash);
+const routeStateVersion = ref(0);
 
 window.addEventListener("popstate", () => {
   currentPath.value = normalizePathname(window.location.pathname);
@@ -71,6 +72,7 @@ window.addEventListener("popstate", () => {
 });
 
 const currentRoute = computed((): SageRouteLocation => {
+  routeStateVersion.value;
   const path = currentPath.value;
   const matched = matchRoute(path);
   const params = matched ? extractParams(matched.path, path) : {};
@@ -152,6 +154,8 @@ export async function createSageRouter(routesModule?: {
     matchRoute = (path: string) => sourceMatchRoute(normalizePathname(path));
     extractParams = (routePath: string, actualPath: string) =>
       sourceExtractParams(normalizePathname(routePath), normalizePathname(actualPath));
+    routeStateVersion.value++;
+    updateRouteState(new URL(window.location.href));
 
     console.log("🔥 Sage Router: Loaded", routes.length, "routes with base", routerBase);
   } else {
@@ -159,6 +163,7 @@ export async function createSageRouter(routesModule?: {
     routes = [];
     matchRoute = () => null;
     extractParams = () => ({});
+    routeStateVersion.value++;
   }
 
   if (typeof window !== "undefined") {

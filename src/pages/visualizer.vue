@@ -31,8 +31,8 @@ import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
 import { RAW_AUDIO_NOISE_FLOOR_DB, rawLevelToDecibels, sampleRawAnalyserLevel } from "../audio-level";
 import { Menu, AudioSources, AudioDebugMeter, BeatHorizon, FractalTraverse, PrismVeil, PulseOverlay } from "../components";
-import { useRouter } from "@wearesage/vue";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
+import { useRouter } from "../sage-router-pages";
 import { useSources } from "../stores/sources";
 import { useVisualizerSettings } from "../stores/visualizer-settings";
 

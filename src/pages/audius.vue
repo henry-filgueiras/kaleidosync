@@ -18,11 +18,11 @@ import {
   AudiusFeatured,
   AudiusTrending,
   useAudius,
-  useRouter,
   useQueue,
   adaptTrack
 } from "@wearesage/vue";
 import { AudioSource } from "@wearesage/shared";
+import { useRouter } from "../sage-router-pages";
 import { useSources } from "../stores/sources";
 
 const audius = useAudius();

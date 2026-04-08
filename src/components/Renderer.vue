@@ -50,9 +50,9 @@ import {
   useViewport,
   useDevice,
   useShaderErrorDetection,
-  useRoute,
   useUI
 } from "@wearesage/vue";
+import { useRoute } from "../sage-router-pages";
 import { useSources } from "../stores/sources";
 import { useVisualizerSettings } from "../stores/visualizer-settings";
 
