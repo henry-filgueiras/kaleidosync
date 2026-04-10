@@ -9,3 +9,5 @@ export { default as PulseOverlay } from "./PulseOverlay.vue";
 export { default as PizzaPresetHud } from "./PizzaPresetHud.vue";
 export { default as PrismVeil } from "./PrismVeil.vue";
 export { default as Renderer } from "./Renderer.vue";
+export { default as SurfaceOracle } from "./SurfaceOracle.vue";
+export { default as SurfaceOracleHud } from "./SurfaceOracleHud.vue";

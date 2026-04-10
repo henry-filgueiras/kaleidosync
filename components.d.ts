@@ -20,5 +20,7 @@ declare module 'vue' {
     PrismVeil: typeof import('./src/components/PrismVeil.vue')['default']
     PulseOverlay: typeof import('./src/components/PulseOverlay.vue')['default']
     Renderer: typeof import('./src/components/Renderer.vue')['default']
+    SurfaceOracle: typeof import('./src/components/SurfaceOracle.vue')['default']
+    SurfaceOracleHud: typeof import('./src/components/SurfaceOracleHud.vue')['default']
   }
 }

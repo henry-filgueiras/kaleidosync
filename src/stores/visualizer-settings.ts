@@ -1,7 +1,8 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
 import { ref, watch } from "vue";
+import { SURFACE_ORACLE_PRESET_IDS, type SurfaceOraclePresetId } from "../surface-oracle/types";
 
-export const VISUALIZATION_MODES = ["classic", "fractal-traverse"] as const;
+export const VISUALIZATION_MODES = ["classic", "fractal-traverse", "surface-oracle"] as const;
 export type VisualizationMode = (typeof VISUALIZATION_MODES)[number];
 export const FRACTAL_TRAVERSE_LAYOUT_MODES = ["full-frame", "pizza-kaleido", "pizza-coin"] as const;
 export type FractalTraverseLayoutMode = (typeof FRACTAL_TRAVERSE_LAYOUT_MODES)[number];
@@ -108,6 +109,18 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const fractalTraversePizzaGrooveStrength = createPersistedNumber("kaleidosync.fractalTraversePizzaGrooveStrength", 0.72);
   const fractalTraversePizzaCrustProtection = createPersistedNumber("kaleidosync.fractalTraversePizzaCrustProtection", 0.82);
   const fractalTraversePizzaValleyGlow = createPersistedNumber("kaleidosync.fractalTraversePizzaValleyGlow", 0.38);
+  const surfaceOraclePresetId = createPersistedString<SurfaceOraclePresetId>(
+    "kaleidosync.surfaceOraclePresetId",
+    "water",
+    SURFACE_ORACLE_PRESET_IDS
+  );
+  const surfaceOracleAmplitude = createPersistedNumber("kaleidosync.surfaceOracleAmplitude", 1);
+  const surfaceOracleRadius = createPersistedNumber("kaleidosync.surfaceOracleRadius", 44);
+  const surfaceOracleDamping = createPersistedNumber("kaleidosync.surfaceOracleDamping", 0.013);
+  const surfaceOraclePropagationSpeed = createPersistedNumber("kaleidosync.surfaceOraclePropagationSpeed", 0.26);
+  const surfaceOracleViscosity = createPersistedNumber("kaleidosync.surfaceOracleViscosity", 0.055);
+  const surfaceOracleSourceFrequency = createPersistedNumber("kaleidosync.surfaceOracleSourceFrequency", 0.82);
+  const surfaceOracleEmitterStrength = createPersistedNumber("kaleidosync.surfaceOracleEmitterStrength", 1.05);
 
   if (typeof window !== "undefined") {
     const migrationVersion = window.localStorage.getItem(PIZZA_TOPOGRAPHY_MIGRATION_KEY);
@@ -150,6 +163,14 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
     fractalTraversePizzaGrooveStrength,
     fractalTraversePizzaCrustProtection,
     fractalTraversePizzaValleyGlow,
+    surfaceOraclePresetId,
+    surfaceOracleAmplitude,
+    surfaceOracleRadius,
+    surfaceOracleDamping,
+    surfaceOraclePropagationSpeed,
+    surfaceOracleViscosity,
+    surfaceOracleSourceFrequency,
+    surfaceOracleEmitterStrength,
   };
 });
 

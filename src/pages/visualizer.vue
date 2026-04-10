@@ -17,10 +17,12 @@
     </Transition>
 
     <FractalTraverse v-if="settings.visualizationMode === 'fractal-traverse'" />
+    <SurfaceOracle v-if="settings.visualizationMode === 'surface-oracle'" />
     <PizzaPresetHud v-if="settings.visualizationMode === 'fractal-traverse' && !showSources && !ui.showShaderScroll" />
-    <PulseOverlay />
-    <BeatHorizon />
-    <PrismVeil />
+    <SurfaceOracleHud v-if="settings.visualizationMode === 'surface-oracle' && !showSources && !ui.showShaderScroll" />
+    <PulseOverlay v-if="showSharedOverlays" />
+    <BeatHorizon v-if="showSharedOverlays" />
+    <PrismVeil v-if="showSharedOverlays" />
     <AudioDebugMeter v-if="showAudioDebugMeter" />
   </View>
 </template>
@@ -31,7 +33,18 @@ import { useMagicKeys } from "@vueuse/core";
 import { audioSystem } from "@wearesage/vue/classes/AudioSystemManager";
 import { View, useViewport, useUI, useSketches, parseQueryString, TrackDisplay, useToast } from "@wearesage/vue";
 import { RAW_AUDIO_NOISE_FLOOR_DB, rawLevelToDecibels, sampleRawAnalyserLevel } from "../audio-level";
-import { Menu, AudioSources, AudioDebugMeter, BeatHorizon, FractalTraverse, PizzaPresetHud, PrismVeil, PulseOverlay } from "../components";
+import {
+  Menu,
+  AudioSources,
+  AudioDebugMeter,
+  BeatHorizon,
+  FractalTraverse,
+  PizzaPresetHud,
+  PrismVeil,
+  PulseOverlay,
+  SurfaceOracle,
+  SurfaceOracleHud,
+} from "../components";
 import { AudioSource, RadioParadiseStation } from "@wearesage/shared";
 import { useRouter } from "../sage-router-pages";
 import { useSources } from "../stores/sources";
@@ -150,12 +163,20 @@ const cycleTiming = computed(() => {
 });
 
 const showAudioDebugMeter = computed(() => {
+  if (settings.visualizationMode === "surface-oracle") {
+    return showSources.value || (showMenu.value && !forceHide.value);
+  }
+
   const isPizzaPresentation =
     settings.visualizationMode === "fractal-traverse" &&
     (settings.fractalTraverseLayoutMode === "pizza-kaleido" || settings.fractalTraverseLayoutMode === "pizza-coin");
 
   if (!isPizzaPresentation) return true;
   return showSources.value || (showMenu.value && !forceHide.value);
+});
+
+const showSharedOverlays = computed(() => {
+  return settings.visualizationMode !== "surface-oracle";
 });
 
 onMounted(async () => {
