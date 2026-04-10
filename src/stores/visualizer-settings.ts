@@ -6,8 +6,8 @@ export const VISUALIZATION_MODES = ["classic", "fractal-traverse", "surface-orac
 export type VisualizationMode = (typeof VISUALIZATION_MODES)[number];
 export const FRACTAL_TRAVERSE_LAYOUT_MODES = ["full-frame", "pizza-kaleido", "pizza-coin"] as const;
 export type FractalTraverseLayoutMode = (typeof FRACTAL_TRAVERSE_LAYOUT_MODES)[number];
-const PIZZA_TOPOGRAPHY_MIGRATION_KEY = "kaleidosync.visualizationDefaultsVersion";
-const PIZZA_TOPOGRAPHY_MIGRATION_VERSION = "pizza-topography-v1";
+const VISUALIZATION_DEFAULTS_MIGRATION_KEY = "kaleidosync.visualizationDefaultsVersion";
+const VISUALIZATION_DEFAULTS_MIGRATION_VERSION = "surface-oracle-default-v1";
 
 function createPersistedBoolean(key: string, fallback: boolean) {
   const value = ref(fallback);
@@ -91,7 +91,7 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const beatHorizonStrength = createPersistedNumber("kaleidosync.beatHorizonStrength", 0.88);
   const visualizationMode = createPersistedString<VisualizationMode>(
     "kaleidosync.visualizationMode",
-    "fractal-traverse",
+    "surface-oracle",
     VISUALIZATION_MODES,
     () => {
       if (typeof window === "undefined") return null;
@@ -123,21 +123,22 @@ export const useVisualizerSettings = defineStore("visualizer-settings", () => {
   const surfaceOracleEmitterStrength = createPersistedNumber("kaleidosync.surfaceOracleEmitterStrength", 1.05);
 
   if (typeof window !== "undefined") {
-    const migrationVersion = window.localStorage.getItem(PIZZA_TOPOGRAPHY_MIGRATION_KEY);
+    const migrationVersion = window.localStorage.getItem(VISUALIZATION_DEFAULTS_MIGRATION_KEY);
 
-    if (migrationVersion !== PIZZA_TOPOGRAPHY_MIGRATION_VERSION) {
+    if (migrationVersion !== VISUALIZATION_DEFAULTS_MIGRATION_VERSION) {
       const savedVisualizationMode = window.localStorage.getItem("kaleidosync.visualizationMode");
       const savedLayoutMode = window.localStorage.getItem("kaleidosync.fractalTraverseLayoutMode");
 
-      if (savedVisualizationMode === null || savedVisualizationMode === "classic") {
-        visualizationMode.value = "fractal-traverse";
+      if (savedVisualizationMode === null) {
+        visualizationMode.value = "surface-oracle";
+        window.localStorage.setItem("kaleidosync.visualizationMode", "surface-oracle");
       }
 
       if (savedLayoutMode === null || savedLayoutMode === "full-frame") {
         fractalTraverseLayoutMode.value = "pizza-kaleido";
       }
 
-      window.localStorage.setItem(PIZZA_TOPOGRAPHY_MIGRATION_KEY, PIZZA_TOPOGRAPHY_MIGRATION_VERSION);
+      window.localStorage.setItem(VISUALIZATION_DEFAULTS_MIGRATION_KEY, VISUALIZATION_DEFAULTS_MIGRATION_VERSION);
     }
   }
 

@@ -19,7 +19,8 @@
     <FractalTraverse v-if="settings.visualizationMode === 'fractal-traverse'" />
     <SurfaceOracle v-if="settings.visualizationMode === 'surface-oracle'" />
     <PizzaPresetHud v-if="settings.visualizationMode === 'fractal-traverse' && !showSources && !ui.showShaderScroll" />
-    <SurfaceOracleHud v-if="settings.visualizationMode === 'surface-oracle' && !showSources && !ui.showShaderScroll" />
+    <SurfaceOracleHud
+      v-if="settings.visualizationMode === 'surface-oracle' && !showSources && !ui.showShaderScroll && !(showMenu && !forceHide)" />
     <PulseOverlay v-if="showSharedOverlays" />
     <BeatHorizon v-if="showSharedOverlays" />
     <PrismVeil v-if="showSharedOverlays" />
