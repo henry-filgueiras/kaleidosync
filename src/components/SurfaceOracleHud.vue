@@ -162,7 +162,7 @@ function onControlInput(key: SurfaceOracleControlKey, event: Event) {
 
 <style lang="scss" scoped>
 .hud-shell {
-  @include position(fixed, null 1rem 1rem null, 430);
+  @include position(fixed, null null 1rem 1rem, 430);
   width: min(25rem, calc(100vw - 2rem));
   pointer-events: none;
 
@@ -195,7 +195,7 @@ function onControlInput(key: SurfaceOracleControlKey, event: Event) {
 }
 
 .hud-toggle {
-  margin-left: auto;
+  margin-right: auto;
   display: flex;
   pointer-events: auto;
   padding: 0.46rem 0.8rem;

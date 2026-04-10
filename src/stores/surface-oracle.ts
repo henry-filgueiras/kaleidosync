@@ -1,5 +1,5 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
-import { computed, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import type {
   SurfaceOracleClickMode,
   SurfaceOracleControlKey,
@@ -140,6 +140,8 @@ export const SURFACE_ORACLE_CONTROL_META: Array<{
   },
 ];
 
+const SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY = "kaleidosync.surfaceOracleClickMode";
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -165,12 +167,22 @@ function createDiagnostics(): SurfaceOracleDiagnosticsSnapshot {
 
 export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
   const settings = useVisualizerSettings();
-  const clickMode = ref<SurfaceOracleClickMode>("impulse");
+  const clickMode = ref<SurfaceOracleClickMode>("emitter");
   const paused = ref(false);
   const hudVisible = ref(true);
   const resetToken = ref(0);
   const diagnostics = reactive(createDiagnostics());
   const pointerLocked = ref(false);
+
+  if (typeof window !== "undefined") {
+    const savedClickMode = window.localStorage.getItem(SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY);
+
+    if (savedClickMode === "impulse" || savedClickMode === "emitter") {
+      clickMode.value = savedClickMode;
+    } else {
+      window.localStorage.setItem(SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY, clickMode.value);
+    }
+  }
 
   const controls = computed<SurfaceOracleControls>(() => {
     return {
@@ -251,6 +263,11 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
   function setPointerLocked(locked: boolean) {
     pointerLocked.value = locked;
   }
+
+  watch(clickMode, nextMode => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY, nextMode);
+  });
 
   return {
     controls,
