@@ -10,6 +10,9 @@ export interface SurfaceOracleControls {
 
 export type SurfaceOracleControlKey = keyof SurfaceOracleControls;
 export type SurfaceOracleClickMode = "impulse" | "emitter";
+export const SURFACE_ORACLE_EMITTER_VOICE_IDS = ["downbeat", "four-floor", "anticipation", "novelty", "bass", "shimmer"] as const;
+export type SurfaceOracleEmitterVoiceId = (typeof SURFACE_ORACLE_EMITTER_VOICE_IDS)[number];
+export type SurfaceOracleEmitterPlacementMode = "cycle" | SurfaceOracleEmitterVoiceId;
 
 export interface SurfaceOraclePreset {
   id: Exclude<SurfaceOraclePresetId, "custom">;
@@ -29,6 +32,13 @@ export interface SurfaceOracleEmitter {
   id: number;
   x: number;
   y: number;
+  voiceId: SurfaceOracleEmitterVoiceId;
+  phaseOffset: number;
+}
+
+export interface SurfaceOracleEmitterVoiceCount {
+  voiceId: SurfaceOracleEmitterVoiceId;
+  count: number;
 }
 
 export interface SurfaceOracleDiagnosticsSnapshot {
@@ -38,11 +48,18 @@ export interface SurfaceOracleDiagnosticsSnapshot {
   cellSize: number;
   pointer: SurfaceOraclePointerSample;
   emitterCount: number;
+  emitterVoices: SurfaceOracleEmitterVoiceCount[];
 }
 
 export interface SurfaceOracleImpulseOptions {
   amplitude: number;
   radius: number;
+}
+
+export interface SurfaceOracleEmitterDrive {
+  amplitude: number;
+  radius: number;
+  glow: number;
 }
 
 export interface SurfaceOracleSimulationSnapshot {

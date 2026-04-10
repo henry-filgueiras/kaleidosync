@@ -1,5 +1,6 @@
 import type {
   SurfaceOracleControls,
+  SurfaceOracleEmitterDrive,
   SurfaceOracleEmitter,
   SurfaceOracleImpulseOptions,
   SurfaceOracleSimulationSnapshot,
@@ -70,11 +71,15 @@ export class HeightFieldSurface {
   }
 
   step(deltaSeconds: number, controls: SurfaceOracleControls) {
+    this.stepWithEmitterDrives(deltaSeconds, controls, undefined);
+  }
+
+  stepWithEmitterDrives(deltaSeconds: number, controls: SurfaceOracleControls, emitterDrives?: Map<number, SurfaceOracleEmitterDrive>) {
     this.accumulator += Math.min(deltaSeconds, MAX_ACCUMULATED_TIME);
     let steps = 0;
 
     while (this.accumulator >= FIXED_STEP && steps < MAX_INTEGRATION_STEPS) {
-      this.integrate(controls);
+      this.integrate(controls, emitterDrives);
       this.simulationTime += FIXED_STEP;
       this.accumulator -= FIXED_STEP;
       steps += 1;
@@ -85,7 +90,15 @@ export class HeightFieldSurface {
     this.applySourceToBuffer(this.currentHeight, x, y, options.amplitude, options.radius);
   }
 
-  toggleEmitterAtPixel(x: number, y: number, proximityRadius = 20): "added" | "removed" {
+  toggleEmitterAtPixel(
+    x: number,
+    y: number,
+    options: {
+      proximityRadius?: number;
+      emitter?: Pick<SurfaceOracleEmitter, "voiceId" | "phaseOffset">;
+    } = {}
+  ): "added" | "removed" {
+    const proximityRadius = options.proximityRadius ?? 20;
     const existingIndex = this.emitters.findIndex(emitter => Math.hypot(emitter.x - x, emitter.y - y) <= proximityRadius);
 
     if (existingIndex >= 0) {
@@ -97,6 +110,8 @@ export class HeightFieldSurface {
       id: this.nextEmitterId,
       x,
       y,
+      voiceId: options.emitter?.voiceId ?? "downbeat",
+      phaseOffset: options.emitter?.phaseOffset ?? 0,
     });
     this.nextEmitterId += 1;
 
@@ -134,7 +149,7 @@ export class HeightFieldSurface {
     return this.emitters.length;
   }
 
-  private integrate(controls: SurfaceOracleControls) {
+  private integrate(controls: SurfaceOracleControls, emitterDrives?: Map<number, SurfaceOracleEmitterDrive>) {
     const energyRetention = clamp(1 - controls.damping, 0.88, 0.998);
     const propagation = controls.propagationSpeed;
     const viscosity = controls.viscosity;
@@ -163,7 +178,7 @@ export class HeightFieldSurface {
       }
     }
 
-    this.applyDrivenEmitters(this.nextHeight, controls, this.simulationTime + FIXED_STEP);
+    this.applyDrivenEmitters(this.nextHeight, controls, this.simulationTime + FIXED_STEP, emitterDrives);
     this.applyReflectiveBoundary(this.nextHeight);
 
     const swap = this.previousHeight;
@@ -172,17 +187,23 @@ export class HeightFieldSurface {
     this.nextHeight = swap;
   }
 
-  private applyDrivenEmitters(buffer: Float32Array, controls: SurfaceOracleControls, timeSeconds: number) {
+  private applyDrivenEmitters(
+    buffer: Float32Array,
+    controls: SurfaceOracleControls,
+    timeSeconds: number,
+    emitterDrives?: Map<number, SurfaceOracleEmitterDrive>
+  ) {
     if (this.emitters.length === 0) return;
 
     const sourceAmplitude = Math.sin(timeSeconds * controls.sourceFrequency * Math.PI * 2);
 
-    if (Math.abs(sourceAmplitude) < 0.0001) return;
-
-    const drivenAmplitude = controls.amplitude * controls.emitterStrength * 0.28 * sourceAmplitude;
-    const drivenRadius = clamp(controls.radius * 0.48, 18, 34);
-
     for (const emitter of this.emitters) {
+      const drive = emitterDrives?.get(emitter.id);
+      const drivenAmplitude = drive?.amplitude ?? controls.amplitude * controls.emitterStrength * 0.28 * sourceAmplitude;
+      const drivenRadius = clamp(drive?.radius ?? controls.radius * 0.48, 12, 42);
+
+      if (Math.abs(drivenAmplitude) < 0.0001) continue;
+
       this.applySourceToBuffer(buffer, emitter.x, emitter.y, drivenAmplitude, drivenRadius);
     }
   }

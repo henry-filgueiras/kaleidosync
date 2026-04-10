@@ -5,6 +5,8 @@ import type {
   SurfaceOracleControlKey,
   SurfaceOracleControls,
   SurfaceOracleDiagnosticsSnapshot,
+  SurfaceOracleEmitterPlacementMode,
+  SurfaceOracleEmitterVoiceId,
   SurfaceOraclePointerSample,
   SurfaceOraclePreset,
   SurfaceOraclePresetId,
@@ -140,7 +142,72 @@ export const SURFACE_ORACLE_CONTROL_META: Array<{
   },
 ];
 
+export const SURFACE_ORACLE_EMITTER_VOICES: Array<{
+  id: SurfaceOracleEmitterVoiceId;
+  label: string;
+  shortLabel: string;
+  accent: string;
+  description: string;
+}> = [
+  {
+    id: "downbeat",
+    label: "Downbeat",
+    shortLabel: "ONE",
+    accent: "#83e7ff",
+    description: "Locks to the direct pulse impact and acts like a primary kick voice.",
+  },
+  {
+    id: "four-floor",
+    label: "Four Floor",
+    shortLabel: "4F",
+    accent: "#ffd39c",
+    description: "Keeps a steadier metronomic thump even when the pulse gets slippery.",
+  },
+  {
+    id: "anticipation",
+    label: "Lift",
+    shortLabel: "LIFT",
+    accent: "#ff9cdd",
+    description: "Swells into the beat and releases around the hit.",
+  },
+  {
+    id: "novelty",
+    label: "Flux",
+    shortLabel: "FLUX",
+    accent: "#9dffc6",
+    description: "Listens for surprise, spectral flux, and sudden structural change.",
+  },
+  {
+    id: "bass",
+    label: "Bassline",
+    shortLabel: "BASS",
+    accent: "#92bfff",
+    description: "Moves with low-frequency body and wider, slower pressure.",
+  },
+  {
+    id: "shimmer",
+    label: "Shimmer",
+    shortLabel: "AIR",
+    accent: "#e4f1ff",
+    description: "Reads high-end sparkle and airy motion as a lighter tracer.",
+  },
+];
+
+export const SURFACE_ORACLE_EMITTER_VOICE_META = Object.fromEntries(
+  SURFACE_ORACLE_EMITTER_VOICES.map(voice => [voice.id, voice])
+) as Record<
+  SurfaceOracleEmitterVoiceId,
+  {
+    id: SurfaceOracleEmitterVoiceId;
+    label: string;
+    shortLabel: string;
+    accent: string;
+    description: string;
+  }
+>;
+
 const SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY = "kaleidosync.surfaceOracleClickMode";
+const SURFACE_ORACLE_EMITTER_PLACEMENT_MODE_STORAGE_KEY = "kaleidosync.surfaceOracleEmitterPlacementMode";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -162,17 +229,20 @@ function createDiagnostics(): SurfaceOracleDiagnosticsSnapshot {
     cellSize: 0,
     pointer: createPointerSample(),
     emitterCount: 0,
+    emitterVoices: [],
   };
 }
 
 export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
   const settings = useVisualizerSettings();
   const clickMode = ref<SurfaceOracleClickMode>("emitter");
+  const emitterPlacementMode = ref<SurfaceOracleEmitterPlacementMode>("cycle");
   const paused = ref(false);
   const hudVisible = ref(true);
   const resetToken = ref(0);
   const diagnostics = reactive(createDiagnostics());
   const pointerLocked = ref(false);
+  const nextEmitterVoiceIndex = ref(0);
 
   if (typeof window !== "undefined") {
     const savedClickMode = window.localStorage.getItem(SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY);
@@ -181,6 +251,14 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
       clickMode.value = savedClickMode;
     } else {
       window.localStorage.setItem(SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY, clickMode.value);
+    }
+
+    const savedEmitterPlacementMode = window.localStorage.getItem(SURFACE_ORACLE_EMITTER_PLACEMENT_MODE_STORAGE_KEY);
+
+    if (savedEmitterPlacementMode === "cycle" || SURFACE_ORACLE_EMITTER_VOICE_META[savedEmitterPlacementMode as SurfaceOracleEmitterVoiceId]) {
+      emitterPlacementMode.value = savedEmitterPlacementMode as SurfaceOracleEmitterPlacementMode;
+    } else {
+      window.localStorage.setItem(SURFACE_ORACLE_EMITTER_PLACEMENT_MODE_STORAGE_KEY, emitterPlacementMode.value);
     }
   }
 
@@ -206,6 +284,13 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
     return activePreset.value?.description ?? "Manual tuning mode for probing the surface and shaping the medium by hand.";
   });
   const accent = computed(() => activePreset.value?.accent ?? "#9ddaff");
+  const nextEmitterVoice = computed(() => {
+    if (emitterPlacementMode.value !== "cycle") {
+      return SURFACE_ORACLE_EMITTER_VOICE_META[emitterPlacementMode.value];
+    }
+
+    return SURFACE_ORACLE_EMITTER_VOICES[nextEmitterVoiceIndex.value % SURFACE_ORACLE_EMITTER_VOICES.length];
+  });
 
   function applyPreset(presetId: Exclude<SurfaceOraclePresetId, "custom">) {
     const preset = SURFACE_ORACLE_PRESETS.find(entry => entry.id === presetId);
@@ -237,6 +322,10 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
     clickMode.value = mode;
   }
 
+  function setEmitterPlacementMode(mode: SurfaceOracleEmitterPlacementMode) {
+    emitterPlacementMode.value = mode;
+  }
+
   function togglePause() {
     paused.value = !paused.value;
   }
@@ -247,6 +336,7 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
 
   function requestReset() {
     resetToken.value += 1;
+    nextEmitterVoiceIndex.value = 0;
   }
 
   function updateDiagnostics(snapshot: SurfaceOracleDiagnosticsSnapshot) {
@@ -258,10 +348,25 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
     diagnostics.pointer.y = snapshot.pointer.y;
     diagnostics.pointer.inside = snapshot.pointer.inside;
     diagnostics.emitterCount = snapshot.emitterCount;
+    diagnostics.emitterVoices = snapshot.emitterVoices;
   }
 
   function setPointerLocked(locked: boolean) {
     pointerLocked.value = locked;
+  }
+
+  function consumeEmitterVoice() {
+    if (emitterPlacementMode.value !== "cycle") {
+      return SURFACE_ORACLE_EMITTER_VOICE_META[emitterPlacementMode.value];
+    }
+
+    const voice = SURFACE_ORACLE_EMITTER_VOICES[nextEmitterVoiceIndex.value % SURFACE_ORACLE_EMITTER_VOICES.length];
+    nextEmitterVoiceIndex.value = (nextEmitterVoiceIndex.value + 1) % SURFACE_ORACLE_EMITTER_VOICES.length;
+    return voice;
+  }
+
+  function resetEmitterVoiceCycle() {
+    nextEmitterVoiceIndex.value = 0;
   }
 
   watch(clickMode, nextMode => {
@@ -269,9 +374,15 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
     window.localStorage.setItem(SURFACE_ORACLE_CLICK_MODE_STORAGE_KEY, nextMode);
   });
 
+  watch(emitterPlacementMode, nextMode => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SURFACE_ORACLE_EMITTER_PLACEMENT_MODE_STORAGE_KEY, nextMode);
+  });
+
   return {
     controls,
     clickMode,
+    emitterPlacementMode,
     paused,
     hudVisible,
     resetToken,
@@ -282,14 +393,18 @@ export const useSurfaceOracleStore = defineStore("surface-oracle", () => {
     activePresetName,
     activePresetDescription,
     accent,
+    nextEmitterVoice,
     applyPreset,
     updateControl,
     setClickMode,
+    setEmitterPlacementMode,
     togglePause,
     toggleHudVisibility,
     requestReset,
     updateDiagnostics,
     setPointerLocked,
+    consumeEmitterVoice,
+    resetEmitterVoiceCycle,
   };
 });
 

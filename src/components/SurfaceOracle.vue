@@ -21,20 +21,25 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { AudioSource } from "@wearesage/shared";
 import { HeightFieldSurface } from "../surface-oracle/height-field";
+import { SURFACE_ORACLE_EMITTER_VOICE_IDS } from "../surface-oracle/types";
 import type {
   SurfaceOracleClickMode,
   SurfaceOracleControls,
   SurfaceOracleDiagnosticsSnapshot,
+  SurfaceOracleEmitter,
+  SurfaceOracleEmitterDrive,
+  SurfaceOracleEmitterVoiceCount,
   SurfaceOraclePointerSample,
   SurfaceOracleSimulationSnapshot,
 } from "../surface-oracle/types";
 import { useAudioFeatures } from "../stores/audio-features";
 import { usePulse } from "../stores/pulse";
 import { useSources } from "../stores/sources";
-import { useSurfaceOracleStore } from "../stores/surface-oracle";
+import { SURFACE_ORACLE_EMITTER_VOICE_META, useSurfaceOracleStore } from "../stores/surface-oracle";
 import { useVisualizerSettings } from "../stores/visualizer-settings";
 
 const DIAGNOSTIC_INTERVAL_MS = 125;
+const TAU = Math.PI * 2;
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 const settings = useVisualizerSettings();
@@ -81,6 +86,19 @@ function clamp255(value: number) {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
 
+function hexToRgba(hex: string, alpha: number) {
+  const normalized = hex.replace("#", "");
+  const expanded = normalized.length === 3 ? normalized.split("").map(char => char + char).join("") : normalized;
+  const red = Number.parseInt(expanded.slice(0, 2), 16);
+  const green = Number.parseInt(expanded.slice(2, 4), 16);
+  const blue = Number.parseInt(expanded.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function beatPulse(value: number) {
+  return Math.pow(Math.max(0, Math.sin(value)), 1.7);
+}
+
 function getBaseControls(): SurfaceOracleControls {
   return surfaceOracle.controls;
 }
@@ -116,17 +134,31 @@ function injectImpulse(x: number, y: number, amplitudeScale = 1, radiusScale = 1
   });
 }
 
-function updateDiagnostics() {
-  const snapshot: SurfaceOracleDiagnosticsSnapshot = {
+function buildEmitterVoiceCounts(emitters: readonly SurfaceOracleEmitter[]): SurfaceOracleEmitterVoiceCount[] {
+  const counts = new Map<string, number>();
+
+  for (const emitter of emitters) {
+    counts.set(emitter.voiceId, (counts.get(emitter.voiceId) ?? 0) + 1);
+  }
+
+  return SURFACE_ORACLE_EMITTER_VOICE_IDS.map(voiceId => ({
+    count: counts.get(voiceId) ?? 0,
+    voiceId,
+  }));
+}
+
+function updateDiagnostics(snapshot: SurfaceOracleSimulationSnapshot = surface.getSnapshot()) {
+  const diagnosticsSnapshot: SurfaceOracleDiagnosticsSnapshot = {
     fps: fps.value,
     gridWidth: surface.getCols(),
     gridHeight: surface.getRows(),
     cellSize: surface.getCellSize(),
     pointer: pointer.value,
     emitterCount: surface.getEmitterCount(),
+    emitterVoices: buildEmitterVoiceCounts(snapshot.emitters),
   };
 
-  surfaceOracle.updateDiagnostics(snapshot);
+  surfaceOracle.updateDiagnostics(diagnosticsSnapshot);
 }
 
 function drawBackdrop(
@@ -259,21 +291,22 @@ function drawReticle(
 
 function drawEmitters(
   ctx: CanvasRenderingContext2D,
-  emitters: readonly { x: number; y: number }[],
-  timeSeconds: number,
-  frequency: number
+  emitters: readonly SurfaceOracleEmitter[],
+  drives: Map<number, SurfaceOracleEmitterDrive>
 ) {
   if (emitters.length === 0) return;
 
-  const pulseAmount = 0.5 + 0.5 * Math.sin(timeSeconds * frequency * Math.PI * 2);
-  const features = audioFeatures.features;
-
   ctx.save();
+  ctx.font = '10px "Space Mono", monospace';
+  ctx.textBaseline = "middle";
 
   for (const emitter of emitters) {
-    const pulseRadius = 7 + pulseAmount * 9 + features.energy * 3;
-    ctx.strokeStyle = `rgba(113, 214, 255, ${0.48 + pulseAmount * 0.22})`;
-    ctx.fillStyle = "rgba(202, 244, 255, 0.92)";
+    const voice = SURFACE_ORACLE_EMITTER_VOICE_META[emitter.voiceId];
+    const drive = drives.get(emitter.id);
+    const glow = clamp(drive?.glow ?? 0.2, 0.08, 1.5);
+    const pulseRadius = 6 + glow * 12;
+    ctx.strokeStyle = hexToRgba(voice.accent, 0.34 + glow * 0.34);
+    ctx.fillStyle = hexToRgba(voice.accent, 0.94);
     ctx.lineWidth = 1.35;
 
     ctx.beginPath();
@@ -283,6 +316,9 @@ function drawEmitters(
     ctx.beginPath();
     ctx.arc(emitter.x, emitter.y, 3.25, 0, Math.PI * 2);
     ctx.fill();
+
+    ctx.fillStyle = hexToRgba(voice.accent, 0.86);
+    ctx.fillText(voice.shortLabel, emitter.x + 10, emitter.y - 10);
   }
 
   ctx.restore();
@@ -354,6 +390,97 @@ function handleAudioInteractions(time: number, deltaSeconds: number, controls: S
   lastPulseEnvelope.value = pulseEnvelope;
 }
 
+function buildEmitterDrives(
+  emitters: readonly SurfaceOracleEmitter[],
+  controls: SurfaceOracleControls,
+  timeSeconds: number
+) {
+  const drives = new Map<number, SurfaceOracleEmitterDrive>();
+  const features = audioFeatures.features;
+  const confidence = clamp(pulse.confidence, 0, 1);
+  const impact = clamp(pulse.impact * confidence, 0, 1.4);
+  const anticipation = clamp(pulse.anticipation * confidence, 0, 1.2);
+  const novelty = clamp(Math.max(features.novelty, features.spectralFlux), 0, 1.2);
+  const bass = clamp(features.bass, 0, 1.3);
+  const lowMid = clamp(features.lowMid, 0, 1.2);
+  const air = clamp(features.high * 0.58 + features.air * 0.82 + features.centroid * 0.3, 0, 1.3);
+  const energy = clamp(features.energy, 0, 1.2);
+  const beatFrequencyHz = clamp(
+    pulse.estimatedIntervalMs > 0 ? 1000 / pulse.estimatedIntervalMs : controls.sourceFrequency,
+    0.15,
+    3
+  );
+
+  for (const emitter of emitters) {
+    const phase = timeSeconds * beatFrequencyHz * TAU + emitter.phaseOffset;
+    const slowPhase = phase * 0.5 + emitter.phaseOffset * 0.35;
+    const fastPhase = phase * 2.15 + emitter.phaseOffset * 0.65;
+    let amplitude = 0;
+    let radius = controls.radius * 0.48;
+    let glow = 0.18;
+
+    // Each voice interprets the music through a different lens so the medium can
+    // behave like a small ensemble rather than a bank of identical oscillators.
+    switch (emitter.voiceId) {
+      case "downbeat": {
+        const floorTap = beatPulse(phase - Math.PI * 0.5);
+        const envelope = Math.max(impact, floorTap * (0.34 + confidence * 0.42));
+        amplitude = controls.amplitude * controls.emitterStrength * (0.18 + envelope * 0.66 + bass * 0.16);
+        radius = controls.radius * (0.42 + bass * 0.18 + envelope * 0.14);
+        glow = envelope * 0.9 + bass * 0.16;
+        break;
+      }
+      case "four-floor": {
+        const floorTap = beatPulse(phase + Math.PI * 0.14);
+        amplitude = controls.amplitude * controls.emitterStrength * (0.16 + floorTap * (0.54 + confidence * 0.24));
+        radius = controls.radius * (0.38 + floorTap * 0.16 + lowMid * 0.1);
+        glow = floorTap * 0.82 + confidence * 0.12;
+        break;
+      }
+      case "anticipation": {
+        const lead = Math.sin(phase - Math.PI * 0.34);
+        const envelope = 0.08 + anticipation * 0.92;
+        amplitude = controls.amplitude * controls.emitterStrength * envelope * lead * 0.72;
+        radius = controls.radius * (0.34 + anticipation * 0.18 + confidence * 0.08);
+        glow = anticipation * 0.92 + Math.abs(lead) * 0.18;
+        break;
+      }
+      case "novelty": {
+        const flutter = Math.sin(fastPhase + novelty * Math.PI * 0.4);
+        const envelope = novelty * (0.42 + energy * 0.26);
+        amplitude = controls.amplitude * controls.emitterStrength * envelope * flutter * 0.76;
+        radius = controls.radius * (0.3 + novelty * 0.12 + features.centroid * 0.08);
+        glow = envelope * 1.05 + Math.abs(flutter) * 0.12;
+        break;
+      }
+      case "bass": {
+        const swell = Math.sin(slowPhase - Math.PI * 0.18);
+        const envelope = 0.18 + bass * 0.86 + impact * 0.12;
+        amplitude = controls.amplitude * controls.emitterStrength * envelope * swell * 0.64;
+        radius = controls.radius * (0.52 + bass * 0.26 + lowMid * 0.12);
+        glow = bass * 0.88 + impact * 0.14;
+        break;
+      }
+      case "shimmer": {
+        const shimmer = Math.sin(fastPhase + Math.PI * 0.16);
+        const envelope = 0.1 + air * 0.72 + novelty * 0.12;
+        amplitude = controls.amplitude * controls.emitterStrength * envelope * shimmer * 0.52;
+        radius = controls.radius * (0.24 + air * 0.08 + features.centroid * 0.06);
+        glow = air * 0.82 + Math.abs(shimmer) * 0.14;
+        break;
+      }
+    }
+
+    drives.set(emitter.id, {
+      amplitude,
+      radius: clamp(radius, 12, 48),
+      glow: clamp(glow, 0.08, 1.5),
+    });
+  }
+
+  return drives;
+}
+
 function renderFrame(time: number) {
   const element = canvas.value;
   if (!element || !offscreenCanvas || !offscreenContext) {
@@ -382,9 +509,12 @@ function renderFrame(time: number) {
   audioFeatures.update(deltaSeconds || 1 / 60);
 
   const controls = getAudioReactiveControls(getBaseControls());
+  const currentSnapshot = surface.getSnapshot();
+  const driveTimeSeconds = currentSnapshot.timeSeconds + (surfaceOracle.paused ? 0 : deltaSeconds || 1 / 60);
+  const emitterDrives = buildEmitterDrives(currentSnapshot.emitters, controls, driveTimeSeconds);
   if (!surfaceOracle.paused) {
     handleAudioInteractions(time, deltaSeconds || 1 / 60, controls);
-    surface.step(deltaSeconds || 1 / 60, controls);
+    surface.stepWithEmitterDrives(deltaSeconds || 1 / 60, controls, emitterDrives);
   }
 
   const { width, height } = dimensions.value;
@@ -401,13 +531,13 @@ function renderFrame(time: number) {
     context.drawImage(offscreenCanvas, 0, 0, width, height);
     context.restore();
 
-    drawEmitters(context, snapshot.emitters, snapshot.timeSeconds, controls.sourceFrequency);
+    drawEmitters(context, snapshot.emitters, emitterDrives);
     drawReticle(context, pointer.value, controls.radius, surfaceOracle.clickMode);
   }
 
   if (time - lastDiagnosticsAt.value > DIAGNOSTIC_INTERVAL_MS) {
     lastDiagnosticsAt.value = time;
-    updateDiagnostics();
+    updateDiagnostics(snapshot);
   }
 
   animationFrame.value = window.requestAnimationFrame(renderFrame);
@@ -446,8 +576,20 @@ function onPointerDown(event: PointerEvent) {
   if (surfaceOracle.clickMode === "emitter") {
     isPointerDown.value = false;
     lastDragInjection.value = null;
-    surface.toggleEmitterAtPixel(point.x, point.y, Math.max(18, getBaseControls().radius * 0.35));
-    updateDiagnostics();
+    const proximityRadius = Math.max(18, getBaseControls().radius * 0.35);
+    const nearbyEmitter = surface.getSnapshot().emitters.find(emitter => Math.hypot(emitter.x - point.x, emitter.y - point.y) <= proximityRadius);
+    const nextVoice = nearbyEmitter ? null : surfaceOracle.consumeEmitterVoice();
+
+    surface.toggleEmitterAtPixel(point.x, point.y, {
+      proximityRadius,
+      emitter: nextVoice
+        ? {
+            voiceId: nextVoice.id,
+            phaseOffset: surface.getEmitterCount() * 0.82 + point.x * 0.0027 + point.y * 0.0018,
+          }
+        : undefined,
+    });
+    updateDiagnostics(surface.getSnapshot());
     return;
   }
 
@@ -507,7 +649,8 @@ watch(
   () => surfaceOracle.resetToken,
   () => {
     surface.reset({ clearEmitters: true });
-    updateDiagnostics();
+    surfaceOracle.resetEmitterVoiceCycle();
+    updateDiagnostics(surface.getSnapshot());
   }
 );
 

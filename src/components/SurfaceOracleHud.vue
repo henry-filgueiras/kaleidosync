@@ -78,6 +78,42 @@
           </div>
         </div>
 
+        <div class="voice-band">
+          <span class="field-label">Emitter Voices</span>
+          <div class="voice-chips">
+            <button
+              type="button"
+              class="voice-chip cycle-chip"
+              :class="{ selected: emitterPlacementMode === 'cycle' }"
+              :style="{ '--voice-accent': accent }"
+              :aria-pressed="emitterPlacementMode === 'cycle'"
+              title="Cycle new emitters through each beat lens"
+              @click="surfaceOracle.setEmitterPlacementMode('cycle')">
+              Cycle
+            </button>
+            <button
+              v-for="voice in emitterVoices"
+              :key="voice.id"
+              type="button"
+              class="voice-chip"
+              :class="{
+                populated: voiceCounts[voice.id] > 0,
+                next: emitterPlacementMode === 'cycle' && nextEmitterVoice.id === voice.id,
+                selected: emitterPlacementMode === voice.id,
+              }"
+              :style="{ '--voice-accent': voice.accent }"
+              :aria-pressed="emitterPlacementMode === voice.id"
+              :title="voice.description"
+              @click="surfaceOracle.setEmitterPlacementMode(voice.id)">
+              {{ voice.shortLabel }}
+              <strong>{{ voiceCounts[voice.id] }}</strong>
+            </button>
+          </div>
+          <p class="voice-note">
+            {{ placementNote }}
+          </p>
+        </div>
+
         <div class="control-list">
           <label v-for="control in controlMeta" :key="control.key" class="control-row">
             <span class="control-meta">
@@ -108,16 +144,22 @@ import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { useAudioFeatures } from "../stores/audio-features";
 import { usePulse } from "../stores/pulse";
-import { SURFACE_ORACLE_CONTROL_META, SURFACE_ORACLE_PRESETS, useSurfaceOracleStore } from "../stores/surface-oracle";
+import {
+  SURFACE_ORACLE_CONTROL_META,
+  SURFACE_ORACLE_EMITTER_VOICES,
+  SURFACE_ORACLE_PRESETS,
+  useSurfaceOracleStore,
+} from "../stores/surface-oracle";
 import type { SurfaceOracleControlKey, SurfaceOraclePresetId } from "../surface-oracle/types";
 
 const audioFeatures = useAudioFeatures();
 const pulse = usePulse();
 const surfaceOracle = useSurfaceOracleStore();
-const { controls, clickMode, hudVisible, paused, diagnostics, activePresetId, activePresetName, activePresetDescription, accent } =
+const { controls, clickMode, emitterPlacementMode, hudVisible, paused, diagnostics, activePresetId, activePresetName, activePresetDescription, accent, nextEmitterVoice } =
   storeToRefs(surfaceOracle);
 const presets = SURFACE_ORACLE_PRESETS;
 const controlMeta = SURFACE_ORACLE_CONTROL_META;
+const emitterVoices = SURFACE_ORACLE_EMITTER_VOICES;
 const clickModes = [
   { label: "Impulse", value: "impulse" as const },
   { label: "Emitter", value: "emitter" as const },
@@ -140,6 +182,27 @@ const signalMetrics = computed(() => {
     bass: `${Math.round(audioFeatures.features.bass * 100)}%`,
     novelty: `${Math.round(Math.max(audioFeatures.features.novelty, audioFeatures.features.spectralFlux) * 100)}%`,
   };
+});
+
+const voiceCounts = computed(() => {
+  const counts = emitterVoices.reduce<Record<string, number>>((accumulator, voice) => {
+    accumulator[voice.id] = 0;
+    return accumulator;
+  }, {});
+
+  diagnostics.value.emitterVoices.forEach(entry => {
+    counts[entry.voiceId] = entry.count;
+  });
+
+  return counts;
+});
+
+const placementNote = computed(() => {
+  if (emitterPlacementMode.value === "cycle") {
+    return `New emitters cycle through beat lenses. Next up: ${nextEmitterVoice.value.label}.`;
+  }
+
+  return `New emitters stay pinned to ${nextEmitterVoice.value.label} until you switch back to Cycle.`;
 });
 
 const hudStyle = computed(() => {
@@ -386,6 +449,76 @@ h2 {
   margin-top: 0.85rem;
   display: grid;
   gap: 0.56rem;
+}
+
+.voice-band {
+  margin-top: 0.85rem;
+}
+
+.voice-chips {
+  margin-top: 0.38rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.38rem;
+}
+
+.voice-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.34rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
+  font-family: "Space Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(232, 240, 248, 0.74);
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    background 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.voice-chip:hover {
+  transform: translateY(-1px);
+}
+
+.cycle-chip {
+  color: rgba(244, 246, 249, 0.86);
+}
+
+.voice-chip strong {
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.98);
+}
+
+.voice-chip.populated {
+  border-color: color-mix(in srgb, var(--voice-accent) 46%, rgba(255, 255, 255, 0.18));
+  color: rgba(245, 248, 251, 0.92);
+}
+
+.voice-chip.next {
+  background: color-mix(in srgb, var(--voice-accent) 16%, rgba(255, 255, 255, 0.04));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--voice-accent) 36%, rgba(255, 255, 255, 0.08));
+}
+
+.voice-chip.selected {
+  border-color: color-mix(in srgb, var(--voice-accent, var(--hud-accent)) 58%, rgba(255, 255, 255, 0.2));
+  background: color-mix(in srgb, var(--voice-accent, var(--hud-accent)) 18%, rgba(255, 255, 255, 0.05));
+  color: rgba(249, 250, 252, 0.98);
+}
+
+.voice-note {
+  margin: 0.52rem 0 0;
+  font-family: "Space Mono", monospace;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  color: rgba(228, 236, 244, 0.74);
 }
 
 .control-row {
